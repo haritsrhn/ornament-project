@@ -1,0 +1,442 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ══════════════════════════════════════════════════════════════════════════
+   Organic — tokens.
+   Ported verbatim from design_handoff_ornament/organic-styles.css. The tonal
+   ramps were generated in OKLCH on one shared lightness scale, so the same
+   step of any role matches the others in visual value.
+   ══════════════════════════════════════════════════════════════════════════ */
+:root {
+  --color-bg: #f5ead8;
+  --color-surface: #ebddc5;
+  --color-text: #201e1d;
+  --color-accent: #c67139;
+  --color-accent-2: #7a8a5e;
+  --color-divider: color-mix(in srgb, #201e1d 16%, transparent);
+
+  --color-neutral-100: #f9f4ed;
+  --color-neutral-200: #eee7db;
+  --color-neutral-300: #dcd3c4;
+  --color-neutral-400: #c0b6a5;
+  --color-neutral-500: #a19786;
+  --color-neutral-600: #82796a;
+  --color-neutral-700: #645c50;
+  --color-neutral-800: #474238;
+  --color-neutral-900: #2e2b25;
+
+  --color-accent-100: #fff2eb;
+  --color-accent-200: #ffe1d0;
+  --color-accent-300: #ffc6a5;
+  --color-accent-400: #f6a06b;
+  --color-accent-500: #d67f48;
+  --color-accent-600: #b2622d;
+  --color-accent-700: #8c491a;
+  --color-accent-800: #643312;
+  --color-accent-900: #402310;
+
+  --color-accent-2-100: #f0fae1;
+  --color-accent-2-200: #e1eecc;
+  --color-accent-2-300: #ccdbb2;
+  --color-accent-2-400: #aebf92;
+  --color-accent-2-500: #8fa073;
+  --color-accent-2-600: #728157;
+  --color-accent-2-700: #56633f;
+  --color-accent-2-800: #3d472b;
+  --color-accent-2-900: #272e1b;
+
+  --font-heading-weight: 400;
+
+  --space-1: 4.4px;
+  --space-2: 8.8px;
+  --space-3: 13.2px;
+  --space-4: 17.6px;
+  --space-6: 26.4px;
+  --space-8: 35.2px;
+
+  --radius-sm: 8px;
+  --radius-md: 16px;
+  --radius-lg: 28px;
+
+  --shadow-sm: 0 1px 2px color-mix(in srgb, #2e2b25 14%, transparent);
+  --shadow-md: 0 3px 10px color-mix(in srgb, #2e2b25 16%, transparent);
+  --shadow-lg: 0 12px 32px color-mix(in srgb, #2e2b25 22%, transparent);
+}
+
+@layer base {
+  * ,
+  *::before,
+  *::after {
+    box-sizing: border-box;
+  }
+
+  body {
+    margin: 0;
+    background: var(--color-bg);
+    color: var(--color-text);
+    font-family: var(--font-body);
+    font-size: 15px;
+    line-height: 1.55;
+    font-weight: 400;
+  }
+
+  h1,
+  h2,
+  h3,
+  h4,
+  h5,
+  h6 {
+    font-family: var(--font-heading);
+    font-weight: var(--font-heading-weight);
+    line-height: 1.12;
+    letter-spacing: -0.015em;
+    margin: 0;
+  }
+
+  h1 { font-size: 42px; }
+  h2 { font-size: 32px; }
+  h3 { font-size: 25px; }
+  h4 { font-size: 20px; }
+  h5 { font-size: 16px; }
+  h6 {
+    font-size: 13px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+  }
+
+  a {
+    color: var(--color-accent);
+    text-decoration: none;
+    text-underline-offset: 3px;
+  }
+  a:hover { color: var(--color-accent-700); }
+
+  img { display: block; max-width: 100%; }
+
+  /* Keyboard focus is always the accent ring — never the browser's blue. */
+  :focus { outline: none; }
+  :focus-visible {
+    outline: 2px solid var(--color-accent);
+    outline-offset: 2px;
+  }
+  ::selection { background: color-mix(in srgb, var(--color-accent) 30%, transparent); }
+}
+
+@layer components {
+  /* — photo wrapper: light desaturation so photos sit inside the warm ground — */
+  .washed {
+    filter: saturate(0.6) contrast(0.85) brightness(1.1) opacity(0.94);
+  }
+
+  /* — buttons — */
+  .btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    cursor: pointer;
+    text-decoration: none;
+    font-family: var(--font-heading);
+    font-weight: var(--font-heading-weight);
+    font-size: 14px;
+    line-height: 1.2;
+    color: var(--color-text);
+    background: transparent;
+    border: 1px solid transparent;
+    padding: var(--space-2) calc(var(--space-3) * 1.2);
+    border-radius: 999px;
+    white-space: nowrap;
+  }
+  .btn svg { display: block; }
+  .btn:disabled { opacity: 0.45; cursor: not-allowed; }
+  .btn-primary { background: var(--color-accent); color: var(--color-bg); }
+  .btn-primary:hover { background: var(--color-accent-600); color: var(--color-bg); }
+  .btn-primary:active { background: var(--color-accent-700); }
+  .btn-secondary { border-color: var(--color-divider); }
+  .btn-secondary:hover {
+    background: color-mix(in srgb, var(--color-text) 7%, transparent);
+    color: var(--color-text);
+  }
+  .btn-secondary:active { background: color-mix(in srgb, var(--color-text) 14%, transparent); }
+  .btn-ghost { color: var(--color-accent); padding-inline: var(--space-1); }
+  .btn-ghost:hover { background: color-mix(in srgb, var(--color-accent) 10%, transparent); }
+  .btn-icon { width: 36px; height: 36px; padding: 0; flex: none; }
+  .btn-block { width: 100%; margin-top: var(--space-2); }
+
+  /* — forms — */
+  .field > label {
+    display: block;
+    font-size: 12px;
+    margin-bottom: 5px;
+    color: color-mix(in srgb, var(--color-text) 70%, transparent);
+  }
+  .input {
+    width: 100%;
+    min-height: 36px;
+    padding: 6px 14px;
+    font: inherit;
+    font-size: 14px;
+    color: var(--color-text);
+    caret-color: var(--color-accent);
+    background: var(--color-surface);
+    border: 1px solid var(--color-divider);
+    border-radius: 999px;
+  }
+  .input:hover { border-color: color-mix(in srgb, var(--color-text) 45%, transparent); }
+  .input:focus-visible { border-color: var(--color-accent); outline-offset: 0; }
+  textarea.input { min-height: 90px; resize: vertical; border-radius: 22px; }
+  select.input { padding-right: 30px; }
+
+  .radio {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    cursor: pointer;
+    font-size: 14px;
+  }
+  .radio input {
+    position: absolute;
+    opacity: 0;
+    width: 0;
+    height: 0;
+    pointer-events: none;
+  }
+  .radio .dot {
+    width: 16px;
+    height: 16px;
+    flex: none;
+    border-radius: 50%;
+    border: 1.5px solid var(--color-divider);
+  }
+  .radio:hover .dot { border-color: var(--color-accent); }
+  .radio input:checked + .dot {
+    border-color: var(--color-accent);
+    background: var(--color-accent);
+    box-shadow: inset 0 0 0 4px var(--color-bg);
+  }
+  .radio input:focus-visible + .dot {
+    outline: 2px solid var(--color-accent);
+    outline-offset: 2px;
+  }
+
+  /* — segmented control — */
+  .seg {
+    display: inline-flex;
+    overflow: hidden;
+    border: 1px solid var(--color-divider);
+    border-radius: 999px;
+  }
+  .seg-opt {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 7px 12px;
+    font-size: 13px;
+    cursor: pointer;
+    background: transparent;
+    border: 0;
+    color: inherit;
+    font-family: var(--font-body);
+  }
+  .seg-opt + .seg-opt { border-left: 1px solid var(--color-divider); }
+  .seg-opt[aria-pressed="true"] { background: var(--color-accent); color: var(--color-bg); }
+  .seg-opt[aria-pressed="false"]:hover {
+    background: color-mix(in srgb, var(--color-text) 7%, transparent);
+  }
+
+  /* — tags — */
+  .tag {
+    display: inline-flex;
+    align-items: center;
+    font-size: 11px;
+    letter-spacing: 0.02em;
+    padding: 3px 10px;
+    border-radius: 999px;
+    white-space: nowrap;
+  }
+  .tag-accent { background: var(--color-accent-100); color: var(--color-accent-800); }
+  .tag-accent-2 { background: var(--color-accent-2-100); color: var(--color-accent-2-800); }
+  .tag-neutral { background: var(--color-neutral-100); color: var(--color-neutral-800); }
+  .tag-outline { border: 1px solid var(--color-accent); color: var(--color-accent); }
+
+  /* — cards — */
+  .card {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2);
+    padding: var(--space-3);
+    border-radius: calc(var(--radius-lg) * 1.15);
+    background: var(--color-surface);
+  }
+  .card-kicker {
+    font-size: 10px;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--color-accent);
+  }
+  .card-title {
+    font-family: var(--font-heading);
+    font-weight: var(--font-heading-weight);
+    font-size: 17px;
+    line-height: 1.2;
+  }
+  .card-body { margin: 0; font-size: 13px; opacity: 0.8; flex: 1; }
+
+  /* Landing product/article card lift — .2s ease, translateY(-3px) + shadow-md */
+  .card-lift { transition: box-shadow 0.2s ease, transform 0.2s ease; }
+  .card-lift:hover { box-shadow: var(--shadow-md); transform: translateY(-3px); }
+
+  /* — dialog — */
+  .dialog {
+    width: min(440px, 100%);
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-3);
+    padding: var(--space-4);
+    border-radius: calc(var(--radius-lg) * 1.15);
+    background: var(--color-surface);
+    box-shadow: var(--shadow-lg);
+  }
+  .dialog-title {
+    font-family: var(--font-heading);
+    font-weight: var(--font-heading-weight);
+    font-size: 20px;
+  }
+  .dialog-body { font-size: 14px; opacity: 0.85; }
+  .dialog-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: var(--space-2);
+    margin-top: var(--space-2);
+  }
+
+  /* — admin panel + table primitives — */
+  .ad-panel {
+    background: var(--color-bg);
+    border-radius: var(--radius-lg);
+    box-shadow: var(--shadow-sm);
+  }
+  .ad-th {
+    font-size: 11px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: color-mix(in srgb, var(--color-text) 60%, transparent);
+    text-align: left;
+    padding: 12px 10px;
+    border-bottom: 1px solid var(--color-divider);
+    font-weight: 400;
+  }
+  .ad-td {
+    padding: 12px 10px;
+    border-bottom: 1px solid color-mix(in srgb, #201e1d 8%, transparent);
+    font-size: 13.5px;
+    vertical-align: top;
+  }
+  /* Row actions stay reserved-in-place and only reveal on hover/focus,
+     so rows never reflow as the pointer moves down the table. */
+  .ad-row .ad-acts { visibility: hidden; }
+  .ad-row:hover .ad-acts,
+  .ad-row:focus-within .ad-acts { visibility: visible; }
+  .ad-acts a { font-size: 11.5px; color: var(--color-accent); }
+  .ad-acts a.del { color: var(--color-accent-700); }
+
+  .ad-barlink {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 12px;
+    color: color-mix(in srgb, #f5ead8 78%, transparent);
+  }
+  .ad-barlink:hover { color: #f5ead8; }
+
+  .ad-tab {
+    cursor: pointer;
+    font-family: var(--font-body);
+    font-size: 12.5px;
+    padding: 5px 12px;
+    border: 0;
+    border-radius: 999px;
+    background: transparent;
+    color: color-mix(in srgb, var(--color-text) 60%, transparent);
+  }
+  .ad-tab:hover { background: color-mix(in srgb, var(--color-text) 7%, transparent); }
+  .ad-tab[aria-pressed="true"] { background: var(--color-text); color: var(--color-bg); }
+
+  .ad-toolbtn {
+    cursor: pointer;
+    width: 30px;
+    height: 30px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border: 0;
+    border-radius: 999px;
+    background: transparent;
+    color: var(--color-text);
+  }
+  .ad-toolbtn:hover { background: color-mix(in srgb, var(--color-text) 8%, transparent); }
+
+  /* Tables never squash: they scroll inside their own container. */
+  .ad-tablewrap { overflow-x: auto; }
+  .ad-tablewrap table { min-width: 760px; width: 100%; border-collapse: collapse; }
+
+  /* — landing filter chip — */
+  .lp-chip {
+    cursor: pointer;
+    font-family: var(--font-body);
+    font-size: 12.5px;
+    padding: 6px 15px;
+    border: 0;
+    border-radius: 999px;
+    background: var(--color-surface);
+    color: var(--color-text);
+  }
+  .lp-chip:hover { background: var(--color-accent-200); }
+  .lp-chip-mat { background: var(--color-accent-100); }
+  .lp-chip[aria-pressed="true"] { background: var(--color-text); color: var(--color-bg); }
+
+  /* — landing sidebar/sub nav links on dark ground — */
+  .ad-navlink {
+    box-sizing: border-box;
+    display: flex;
+    align-items: center;
+    gap: 11px;
+    width: 100%;
+    padding: 9px 14px;
+    border: 0;
+    border-radius: 999px;
+    background: transparent;
+    font-family: var(--font-body);
+    font-size: 13.5px;
+    cursor: pointer;
+    text-align: left;
+    color: color-mix(in srgb, #f5ead8 72%, transparent);
+  }
+  .ad-navlink:hover {
+    background: color-mix(in srgb, #f5ead8 10%, transparent);
+    color: #f5ead8;
+  }
+  .ad-navlink[aria-current="page"] { background: var(--color-accent); color: #f5ead8; }
+
+  .ad-subnav {
+    padding: 6px 14px 6px 45px;
+    font-size: 12.5px;
+    color: color-mix(in srgb, #f5ead8 55%, transparent);
+  }
+  .ad-subnav[aria-current="page"] {
+    background: color-mix(in srgb, #f5ead8 12%, transparent);
+    color: #f5ead8;
+  }
+  .ad-subnav[aria-current="page"]:hover {
+    background: color-mix(in srgb, #f5ead8 16%, transparent);
+  }
+}
+
+@layer utilities {
+  /* The accordion "+" rotates 45° into an "×" when its <details> opens. */
+  details[open] .os-chev { transform: rotate(45deg); }
+  .os-chev { transition: transform 0.2s ease; }
+  summary.os-summary { list-style: none; cursor: pointer; }
+  summary.os-summary::-webkit-details-marker { display: none; }
+}
