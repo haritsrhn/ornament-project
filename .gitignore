@@ -1,10 +1,13 @@
 node_modules
 .next
 out
+dist/
 .DS_Store
+*.log
 
 # Local env — real contact details live here, .env.example is the template
 .env*.local
+backend/.env
 *.tsbuildinfo
 next-env.d.ts
 
