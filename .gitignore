@@ -8,6 +8,12 @@ dist/
 # Local env — real contact details live here, .env.example is the template
 .env*.local
 backend/.env
+backend/.env.test
+backend/.env.*.local
+!backend/.env.example
+
+# Prisma Client hasil `prisma generate` (dibuat ulang saat npm install/build)
+backend/src/generated/
 *.tsbuildinfo
 next-env.d.ts
 

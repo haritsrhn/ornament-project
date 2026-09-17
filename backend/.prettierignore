@@ -2,3 +2,5 @@ dist/
 node_modules/
 docs/
 *.md
+src/generated/
+prisma/migrations/

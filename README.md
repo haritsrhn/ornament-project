@@ -8,7 +8,8 @@ package.json               root workspaces: frontend, backend, packages/*
 package-lock.json          satu lockfile untuk semua workspace
 .nvmrc                     Node 24
 frontend/                  Next.js (App Router) + TypeScript + Tailwind
-backend/                   Fastify API + TypeScript — lihat backend/README.md
+backend/                   Fastify API + TypeScript + Prisma — lihat backend/README.md
+docker-compose.yml         PostgreSQL lokal (dev + test) untuk backend
 packages/                  paket bersama (menyusul, mis. @ornament/shared)
 design_handoff_ornament/   Referensi desain (tidak di-track git)
 ```
@@ -32,6 +33,8 @@ npm run dev:backend    # http://localhost:4000
 npm run build          # build semua workspace
 npm run typecheck      # typecheck semua workspace
 npm run lint           # lint backend
+npm run db:up          # PostgreSQL lokal via Docker (tunggu healthy)
+npm run db:down        # matikan PostgreSQL lokal
 ```
 
 Script per workspace: `npm run <script> --workspace frontend|backend`.
@@ -48,7 +51,8 @@ state komponen lalu menampilkan toast. Integrasi ke API menyusul.
 
 ## Backend
 
-Scaffold Fastify sudah bisa dijalankan (`GET /v1`); database, autentikasi, dan
+Scaffold Fastify sudah bisa dijalankan (`GET /v1`) dengan PostgreSQL (Prisma) dan
+validasi env; autentikasi dan
 endpoint domain dibangun bertahap. Cara menjalankan dan struktur ada di
 [`backend/README.md`](backend/README.md); keputusan arsitektur, model domain,
 dan kontrak API ada di [`backend/docs/`](backend/docs/).
