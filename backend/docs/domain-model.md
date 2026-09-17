@@ -207,6 +207,7 @@ erDiagram
         uuid parentId FK
         uuid authorUserId FK
         enum status
+        boolean notifyOnReply
         datetime anonymizedAt
     }
     Inquiry {
@@ -425,10 +426,11 @@ Story). Kolom "Artikel" di UI diturunkan dari jumlah `Article`.
 | photoId | Uuid → Media | | | Foto workshop utama. SetNull. |
 | archivedAt | DateTime | | IX | "Arsipkan". Produk terbitnya tetap tayang (§6.7). |
 
-Data identitas pengrajin (Q14) yang sudah dimodelkan: `contactName`, `phone`,
-`address`, `internalNotes`, dan `ArtisanDocument`, semuanya 🔒. Kolom KTP atau nomor
-rekening **tidak** ditambahkan karena belum ada field-nya di layar admin; bila
-dibutuhkan, lihat §9.2.
+Data identitas pengrajin (Q14) yang dimodelkan: `contactName`, `phone`,
+`address`, `internalNotes`, dan `ArtisanDocument`, semuanya 🔒. KTP dan nomor
+rekening **tidak** menjadi kolom teks; keduanya diunggah sebagai scan/foto
+`ArtisanDocument` dengan `kind` `IDENTITY` / `BANK_ACCOUNT` (keputusan #49), sehingga
+tidak perlu enkripsi tingkat field.
 
 #### ArtisanImage
 
@@ -437,12 +439,15 @@ PK komposit (`artisanId`, `mediaId`). Galeri publik seperti "Proses anyam" dan "
 
 #### ArtisanDocument 🔒
 
+Berkas disimpan sebagai Media `PRIVATE` di R2 dan hanya dibuka lewat presigned GET
+berdurasi pendek oleh Administrator/Editor. Contributor tidak punya akses (A2/ROLE_CAPS).
+
 | Field | Tipe | Wajib | Indeks | Catatan |
 | --- | --- | --- | --- | --- |
 | id | Uuid | ✓ | PK | |
 | artisanId | Uuid → Artisan | ✓ | IX | Cascade |
 | mediaId | Uuid → Media | ✓ | | Restrict; Media harus `PRIVATE`. |
-| kind | `ArtisanDocumentKind` | ✓ | | |
+| kind | `ArtisanDocumentKind` | ✓ | IX(artisanId, kind) | `IDENTITY` dan `BANK_ACCOUNT` berisi data pribadi (UU PDP). |
 | title | String | ✓ | | |
 | uploadedById | Uuid → User | | | SetNull |
 
@@ -591,6 +596,7 @@ type ArticleBlock =
 | moderatedAt | DateTime | | | |
 | ipHash | String | | | 🔒 Untuk rate limit/anti-spam, bukan IP mentah. Dikosongkan setelah 30 hari (§6.11). |
 | userAgent | String | | | 🔒 Dikosongkan bersama `ipHash`. |
+| notifyOnReply | Boolean | ✓ | | Default `false`. Disiapkan untuk notifikasi email saat komentar dibalas; **belum dipakai** di fase ini (tidak diterima dari form publik, tidak ada pengiriman). Dikosongkan ke `false` saat dianonimkan. |
 | anonymizedAt | DateTime | | IX | Diisi saat data pribadi dianonimkan (§6.11). |
 
 ### 3.7 Inquiry
@@ -774,7 +780,7 @@ log yang merujuk inquiry/komentar terkait (§6.11).
 | QcStage | `MATERIAL` · `FRAME` · `FINISHING` · `PACKAGING` |
 | QcStatus | `PENDING` (belum) · `IN_PROGRESS` proses · `PASSED` ✓ · `FAILED` |
 | ArtisanStatus | `VERIFICATION` Verifikasi · `ACTIVE` Aktif · `FULL_CAPACITY` Kapasitas penuh |
-| ArtisanDocumentKind | `PARTNERSHIP_AGREEMENT` Perjanjian kerja sama · `MATERIAL_ORIGIN` Catatan asal material · `OTHER` |
+| ArtisanDocumentKind | `CONTRACT` Perjanjian kerja sama · `IDENTITY` KTP penanggung jawab · `BANK_ACCOUNT` Buku tabungan/bukti rekening · `MATERIAL_ORIGIN` Asal-usul material/legalitas kayu · `OTHER` Lainnya |
 | ArticleStatus | `DRAFT` · `SCHEDULED` · `PUBLISHED` |
 | CommentStatus | `PENDING` Menunggu · `APPROVED` Disetujui · `SPAM` Spam · `DELETED` Terhapus |
 | InquiryStatus | `NEW` Baru (tab "Belum dibaca") · `IN_PROGRESS` Diproses ("Ditindaklanjuti") · `DONE` Selesai |
@@ -1108,7 +1114,7 @@ Tab admin "Published/Draft" memakai `publishStatus`. Filter "daerah" memakai
 - Reset kata sandi mandiri ("Lupa sandi?"): admin mengirim ulang undangan (ADR).
 - Pemulihan produk ke revisi lama. (Redirect slug lama **masuk** cakupan, §6.10.)
 - Gravatar atau avatar komentar dari layanan pihak ketiga (Q9: avatar = inisial).
-- Notifikasi email ke pemberi komentar saat komentarnya dibalas (lihat §9.2).
+- Notifikasi email ke pemberi komentar saat komentarnya dibalas: ditunda ke setelah v1 (keputusan #49). Butuh opt-in, token berhenti langganan, dan antrean kirim; field `Comment.notifyOnReply` sudah disiapkan.
 - Daftar sesi aktif per perangkat / "keluar dari semua perangkat" (A8).
 - Pencarian full-text (saat ini cukup `ILIKE` + indeks trigram opsional pada `name`/`sku`).
 - Konten multibahasa, walaupun `siteLanguage` sudah disimpan.
@@ -1152,11 +1158,10 @@ Keputusan turunan yang diambil saat menerapkan (bisa dikoreksi saat review):
 - Enum `QcStatus` tetap memakai `PENDING` sebagai "belum dicek" (setara `UNCHECKED` di keputusan Q6).
 - Nama field tetap `fobPriceUsd` (bukan `fobPrice`) agar mata uang eksplisit.
 
-### 9.2 Perlu konfirmasi
+### 9.2 Keputusan lanjutan (komentar #49)
 
-1. **Identitas pengrajin (Q14):** pemilik menyebut KTP dan nomor rekening, tetapi layar
-   admin belum punya field-nya. Apakah perlu kolom terstruktur (🔒, idealnya terenkripsi
-   di level aplikasi), atau cukup diunggah sebagai `ArtisanDocument` (kind `OTHER`)?
-2. **Notifikasi balasan komentar (Q9):** pemilik menyebut email dipakai untuk memberi tahu
-   bila komentar dibalas. Fitur ini belum dimodelkan (butuh persetujuan/opt-in dan tautan
-   berhenti langganan). Masuk fase ini atau ditunda?
+| ID | Keputusan | Dampak |
+| --- | --- | --- |
+| Identitas pengrajin | KTP & rekening diunggah sebagai `ArtisanDocument` (`IDENTITY`, `BANK_ACCOUNT`), bukan kolom terstruktur. | Enum `ArtisanDocumentKind` diperluas; berkas privat di R2, akses Administrator/Editor via presigned URL. |
+| Notifikasi balasan komentar | Ditunda ke setelah v1. | `Comment.notifyOnReply` (default `false`) disiapkan tanpa logika kirim. |
+| Gravatar | Tetap tidak dipakai (keputusan Q9), walaupun disebut di #49. | Avatar komentar = inisial nama. |

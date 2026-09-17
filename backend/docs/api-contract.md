@@ -1292,7 +1292,7 @@ Sumber: [komentar pemilik di PR #47](https://github.com/haritsrhn/ornament-proje
 | A10 | Arsip pengrajin diizinkan dengan `warnings`; produk tetap tayang; tautan pengrajin di publik dinonaktifkan. | `POST /v1/admin/artisans/:id/archive` → `warnings`; `artisan.slug: null` di `PublicProductDetail` (§5.1, §5.8). |
 | A11 | Tanpa validasi stok kaku selain `MADE_TO_ORDER ⇒ stockQuantity null`. | `400` hanya untuk kombinasi itu (§5.6). |
 
-### 8.1 Keputusan turunan dan perlu konfirmasi
+### 8.1 Keputusan turunan dan lanjutan
 
 Keputusan turunan yang diambil saat menerapkan (bisa dikoreksi saat review):
 
@@ -1303,5 +1303,7 @@ Keputusan turunan yang diambil saat menerapkan (bisa dikoreksi saat review):
 - `PublicProductCard` tidak memuat harga FOB (hanya detail).
 - Redirect tidak mencakup halaman (`Page.path`) dan pengrajin.
 
-Perlu konfirmasi pemilik: lihat [model domain §9.2](domain-model.md#92-perlu-konfirmasi)
-(field identitas pengrajin, notifikasi balasan komentar).
+Keputusan lanjutan (komentar #49), lihat [model domain §9.2](domain-model.md#92-keputusan-lanjutan-komentar-49):
+
+- `ArtisanDocumentKind` = `CONTRACT | IDENTITY | BANK_ACCOUNT | MATERIAL_ORIGIN | OTHER`. KTP & rekening hanya lewat dokumen privat; tidak ada field terstruktur di `ArtisanInput`.
+- `Comment.notifyOnReply` belum diekspos: tidak diterima `POST /v1/public/articles/:slug/comments` dan tidak ada di DTO sampai fitur notifikasi dijadwalkan.
