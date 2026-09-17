@@ -1,40 +1,58 @@
-# Backend — belum diimplementasikan
+# Backend — API Ornament
 
-Folder ini sengaja masih kosong. Fase saat ini hanya mencakup **UI statis dan
-state interaksi frontend**; integrasi backend, Prisma, dan logika database
-belum boleh ditulis.
+API untuk situs publik dan admin CMS. Fastify 5 + TypeScript (ESM, strict),
+berjalan di Node.js 24. Keputusan arsitektur ada di
+[`docs/adr/0001-arsitektur-backend.md`](docs/adr/0001-arsitektur-backend.md).
 
-Isi folder ini pada fase berikutnya. Catatan di bawah diambil dari bagian
-*State Management* pada `design_handoff_ornament/README.md`, supaya kontrak
-datanya tidak perlu diturunkan ulang dari awal.
+**Status: scaffold (T1.1).** Server sudah bisa dijalankan, tetapi baru punya
+satu rute sementara `GET /v1`. Database/Prisma dan validasi env (T1.2), format
+error, validasi Zod, dan health check (T1.3), tes & CI (T1.4), serta paket
+`@ornament/shared` (T1.5) menyusul.
 
-## Yang perlu jadi server state (butuh API)
+## Struktur
 
-Produk, kategori & material, halaman + blok, pengrajin, artikel, media,
-komentar, inquiry, dan pengaturan situs.
+```
+src/
+  app.ts          buildApp() — merakit instance Fastify tanpa listen (dipakai server & tes)
+  server.ts       entry: baca HOST/PORT, listen, graceful shutdown (SIGINT/SIGTERM)
+docs/             ADR, model domain, kontrak API
+eslint.config.js  ESLint flat config (typescript-eslint, type-checked)
+tsconfig.json     konfigurasi editor/typecheck (NodeNext, strict)
+tsconfig.build.json  build ke dist/
+```
 
-Sisanya — route aktif, kata kunci pencarian, tab status, filter terpilih, baris
-terpilih untuk aksi massal, nomor halaman, isi form yang sedang diedit, pesan
-validasi, blok terpilih di Page Builder, visibilitas dialog dan toast, indeks
-slide carousel, status menu mobile — sudah ditangani di frontend sebagai client
-state dan tidak perlu API.
+## Menjalankan lokal
 
-## Endpoint yang tersirat dari desain
+Paket ini bagian dari npm workspaces; install dari **root** repo.
 
-| Domain | Kebutuhan |
+```bash
+nvm use                           # Node 24 dari .nvmrc
+npm install                       # di root repo
+npm run dev --workspace backend   # tsx watch, http://localhost:4000
+curl http://localhost:4000/v1     # {"data":{"name":"ornament-api"}}
+```
+
+| Variabel | Default | Keterangan |
+| --- | --- | --- |
+| `HOST` | `0.0.0.0` | Alamat listen |
+| `PORT` | `4000` | Port listen |
+
+## Script
+
+Jalankan dengan `npm run <script> --workspace backend` dari root, atau
+`npm run <script>` di dalam `backend/`.
+
+| Script | Fungsi |
 | --- | --- |
-| Produk, kategori, halaman, pengrajin, artikel, media, pengguna | CRUD penuh |
-| Komentar | List + update status (moderasi: menunggu / disetujui / spam) |
-| Inquiry | List + update status, dan kirim balasan lewat email |
-| Form kontak publik | Submit → membuat inquiry baru |
-| Form komentar publik | Submit → masuk antrean moderasi |
-| Autentikasi admin | Login dengan pembatasan domain email `@ornament.id` |
+| `dev` | Server dengan reload otomatis (`tsx watch`) |
+| `build` | Kompilasi ke `dist/` |
+| `start` | Jalankan hasil build (`node dist/server.js`) |
+| `typecheck` | `tsc --noEmit` |
+| `lint` | ESLint |
+| `format` / `format:check` | Prettier (tulis / cek saja) |
 
-## Bentuk data
+## Dokumentasi
 
-`frontend/lib/types.ts` sudah mendefinisikan `Product`, `Artisan`, `Article`,
-`Comment`, dan `Inquiry` sesuai yang dirender UI. Pakai itu sebagai titik awal
-skema, dan jadikan satu sumber tipe bersama saat API-nya ada.
-
-`frontend/lib/data.ts` berisi data contoh dengan bentuk yang sama — berguna
-sebagai fixture/seed, tapi isinya data mockup, bukan data operasional.
+- [`docs/adr/0001-arsitektur-backend.md`](docs/adr/0001-arsitektur-backend.md) — keputusan arsitektur
+- [`docs/domain-model.md`](docs/domain-model.md) — model domain
+- [`docs/api-contract.md`](docs/api-contract.md) — kontrak API

@@ -1,37 +1,57 @@
 # Ornament Sourcing Agent
 
-Monorepo untuk situs publik dan admin CMS Ornament Sourcing Agent.
+Monorepo untuk situs publik dan admin CMS Ornament Sourcing Agent, dikelola
+dengan **npm workspaces**.
 
 ```
+package.json               root workspaces: frontend, backend, packages/*
+package-lock.json          satu lockfile untuk semua workspace
+.nvmrc                     Node 24
 frontend/                  Next.js (App Router) + TypeScript + Tailwind
-backend/                   Belum diimplementasikan — lihat backend/README.md
+backend/                   Fastify API + TypeScript — lihat backend/README.md
+packages/                  paket bersama (menyusul, mis. @ornament/shared)
 design_handoff_ornament/   Referensi desain (tidak di-track git)
 ```
 
-## Frontend
+## Persiapan
+
+Proyek memakai **Node.js 24** (`.nvmrc`, `engines` di `package.json`). Semua
+dependensi di-install sekali dari root; jangan jalankan `npm install` di dalam
+folder workspace.
 
 ```bash
-cd frontend
+nvm use
 npm install
-npm run dev        # http://localhost:3000  ·  /admin untuk CMS
-npm run build
-npm run typecheck
 ```
+
+Script agregat di root:
+
+```bash
+npm run dev:frontend   # http://localhost:3000  ·  /admin untuk CMS
+npm run dev:backend    # http://localhost:4000
+npm run build          # build semua workspace
+npm run typecheck      # typecheck semua workspace
+npm run lint           # lint backend
+```
+
+Script per workspace: `npm run <script> --workspace frontend|backend`.
+
+## Frontend
 
 Berisi 9 tampilan situs publik dan 16 layar admin CMS, dibangun dari paket
 `design_handoff_ornament/`. Detail design system, routing, komponen, dan
 perilaku responsif ada di [`frontend/README.md`](frontend/README.md).
 
-**Cakupan saat ini: UI statis dan state interaksi frontend saja.** Tidak ada
-backend, Prisma, database, atau autentikasi. Semua daftar dirender dari
-`frontend/lib/data.ts`, dan setiap aksi "simpan" hanya mengubah state komponen
-lalu menampilkan toast.
+Frontend saat ini masih UI statis dan state interaksi saja: semua daftar
+dirender dari `frontend/lib/data.ts`, dan setiap aksi "simpan" hanya mengubah
+state komponen lalu menampilkan toast. Integrasi ke API menyusul.
 
 ## Backend
 
-Masih kosong. [`backend/README.md`](backend/README.md) mencatat server state,
-endpoint, dan bentuk data yang tersirat dari desain, sebagai titik mulai fase
-berikutnya.
+Scaffold Fastify sudah bisa dijalankan (`GET /v1`); database, autentikasi, dan
+endpoint domain dibangun bertahap. Cara menjalankan dan struktur ada di
+[`backend/README.md`](backend/README.md); keputusan arsitektur, model domain,
+dan kontrak API ada di [`backend/docs/`](backend/docs/).
 
 ## Deployment
 

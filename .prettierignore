@@ -1,0 +1,6 @@
+# Prettier saat ini hanya dipakai backend; frontend tidak diformat ulang.
+frontend/
+backend/docs/
+dist/
+node_modules/
+package-lock.json
