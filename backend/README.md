@@ -4,11 +4,11 @@ API untuk situs publik dan admin CMS. Fastify 5 + TypeScript (ESM, strict),
 berjalan di Node.js 24. Keputusan arsitektur ada di
 [`docs/adr/0001-arsitektur-backend.md`](docs/adr/0001-arsitektur-backend.md).
 
-**Status: fondasi (T1.1–T1.3).** Server terhubung ke PostgreSQL lewat Prisma,
+**Status: fondasi (T1.1–T1.4).** Server terhubung ke PostgreSQL lewat Prisma,
 memvalidasi env saat startup, dan punya middleware inti: format error kontrak,
 validasi request/response dengan Zod, request ID + logging, serta health check.
-Tes & CI (T1.4), paket `@ornament/shared` (T1.5), serta model domain (Tahap 2)
-menyusul.
+Tes unit/integrasi (Vitest) dan CI GitHub Actions sudah berjalan. Paket
+`@ornament/shared` (T1.5) serta model domain (Tahap 2) menyusul.
 
 ## Struktur
 
@@ -29,6 +29,12 @@ prisma/
   schema.prisma        datasource + generator (belum ada model domain)
   migrations/          migrasi SQL (muncul saat model pertama ditambahkan)
 prisma.config.ts       konfigurasi Prisma CLI (lokasi skema, migrasi, DATABASE_URL)
+test/
+  unit/                tes tanpa database (env, error, error handler, request ID, health)
+  integration/         tes dengan database tes nyata + global-setup.ts (prisma migrate deploy)
+  helpers/app.ts       buildTestApp() — app dengan logger mati, ditutup otomatis di akhir tes
+  helpers/database.ts  resolveTestDatabaseUrl() + createTestPrisma() — hanya DB `*_test`
+vitest.config.ts       project Vitest `unit` dan `integration`
 docker/postgres-init/  skrip init container Postgres (membuat ornament_test)
 .env.example           template env — salin ke .env
 docs/                  ADR, model domain, kontrak API
@@ -60,7 +66,7 @@ curl http://localhost:4000/v1/health   # {"data":{"status":"ok"}}
 | Database | Dipakai untuk | `DATABASE_URL` |
 | --- | --- | --- |
 | `ornament` | dev | `postgresql://ornament:ornament@localhost:5432/ornament?schema=public` |
-| `ornament_test` | tes (T1.4) | `postgresql://ornament:ornament@localhost:5432/ornament_test?schema=public` |
+| `ornament_test` | tes | `postgresql://ornament:ornament@localhost:5432/ornament_test?schema=public` |
 
 `ornament_test` dibuat oleh `docker/postgres-init/01-create-test-db.sql`, yang
 hanya dijalankan image Postgres saat volume **masih kosong**. Bila volume sudah
@@ -113,6 +119,56 @@ dicetak). `dev` dan `start` memuat `backend/.env` bila ada
 
 Di `NODE_ENV=production`, `INTERNAL_API_KEY`, `INTERNAL_JOB_TOKEN`, dan
 `REVALIDATE_SECRET` (bila di-set) minimal 32 karakter.
+
+## Tes
+
+[Vitest](https://vitest.dev) dengan dua project:
+
+| Project | Lokasi | Butuh DB |
+| --- | --- | --- |
+| `unit` | `test/unit/**/*.test.ts` | Tidak — app dibangun tanpa DB, diuji lewat `app.inject` |
+| `integration` | `test/integration/**/*.test.ts` | Ya — database tes (`ornament_test`) |
+
+```bash
+npm run db:up                                   # di root; integration butuh PostgreSQL
+npm test                                        # di root: semua tes backend (unit + integration)
+npm run test --workspace backend                # sama, eksplisit
+npm run test:unit --workspace backend           # hanya unit (tanpa DB)
+npm run test:integration --workspace backend    # hanya integration
+npm run test:watch --workspace backend          # mode watch
+npm run test --workspace backend -- test/unit/env.test.ts   # satu file
+```
+
+### Database tes
+
+- URL diambil dari **`TEST_DATABASE_URL`**; bila tidak di-set, default
+  `postgresql://ornament:ornament@localhost:5432/ornament_test?schema=public`
+  (cocok dengan `docker-compose.yml`). Tidak perlu file env tes.
+- Tes **tidak pernah** membaca `DATABASE_URL` (di `backend/.env` menunjuk DB dev
+  `ornament`), dan helper menolak nama database yang tidak berakhiran `_test`.
+- Global setup project `integration` menjalankan `prisma migrate deploy` ke DB
+  tes (dengan `DATABASE_URL` proses anak di-set ke URL tes). Bila DB tidak
+  terjangkau, tes gagal cepat dengan pesan yang jelas. Selama belum ada
+  migrasi, langkah ini hanya memastikan koneksi.
+- Tes integrasi memverifikasi `current_database()` berakhiran `_test`.
+
+### Menulis tes
+
+```ts
+import { expect, test } from 'vitest';
+
+import { buildTestApp } from '../helpers/app.js';
+import { createTestPrisma } from '../helpers/database.js';
+
+test('contoh', async () => {
+  const app = buildTestApp({ prisma: createTestPrisma() }); // tanpa `prisma` → app tanpa DB
+  const res = await app.inject({ method: 'GET', url: '/v1/health/ready' });
+  expect(res.statusCode).toBe(200);
+}); // app.close() (+ $disconnect) otomatis lewat onTestFinished
+```
+
+Setiap tes membangun app sendiri; jangan berbagi state antar-tes atau
+antar-file agar hasil tidak bergantung urutan.
 
 ## HTTP API: konvensi dasar
 
@@ -204,12 +260,21 @@ Jalankan dengan `npm run <script> --workspace backend` dari root, atau
 | `typecheck` | `tsc --noEmit` |
 | `lint` | ESLint |
 | `format` / `format:check` | Prettier (tulis / cek saja) |
+| `test` | Semua tes sekali jalan (unit + integration) |
+| `test:unit` / `test:integration` | Satu project Vitest |
+| `test:watch` | Vitest mode watch |
 | `db:generate` | `prisma generate` |
 | `db:migrate` | `prisma migrate dev` (buat + terapkan migrasi, dev) |
 | `db:migrate:deploy` | `prisma migrate deploy` (terapkan migrasi yang ada) |
 | `db:studio` | Prisma Studio |
 
-Di root: `db:up` / `db:down` untuk container PostgreSQL.
+Di root: `db:up` / `db:down` untuk container PostgreSQL, `test` untuk tes backend.
+
+## CI
+
+`.github/workflows/ci.yml` (lihat README root) menjalankan untuk backend:
+`npm ci` → `db:generate` → `typecheck` → `lint` → `format:check` → `test`
+(dengan service container `postgres:18-alpine` dan `TEST_DATABASE_URL`) → `build`.
 
 ## Dokumentasi
 
