@@ -1,7 +1,19 @@
 // Skema Prisma — API Ornament.
 // URL koneksi TIDAK ditulis di sini (Prisma 7): CLI membacanya dari
 // prisma.config.ts, runtime memakai driver adapter @prisma/adapter-pg.
-// Model domain ditambahkan mulai Tahap 2 (lihat docs/domain-model.md).
+//
+// Sumber kebenaran model ini: docs/domain-model.md (§3 entitas, §4 enum,
+// §5 relasi & aturan hapus) dan docs/adr/0001-arsitektur-backend.md.
+//
+// Konvensi (lihat README §Prisma):
+// - Nama model/field camelCase Inggris; nama tabel/kolom/enum di PostgreSQL
+//   snake_case lewat @@map/@map (ADR K8 menulis SQL mentah `publish_at`).
+// - ID `String @id @default(uuid()) @db.Uuid`, semua waktu `@db.Timestamptz`
+//   (UTC) — domain model D1.
+// - Enum memakai kode stabil (ADR K2), bukan label UI.
+// - Aturan yang tidak bisa diekspresikan Prisma (CHECK, unik parsial, indeks
+//   trigram, sequence saran SKU) ditambahkan lewat SQL di file migrasi; lihat
+//   daftar di README §Constraint SQL manual.
 
 generator client {
   provider               = "prisma-client"
@@ -9,8 +21,1085 @@ generator client {
   moduleFormat           = "esm"
   importFileExtension    = "js"
   generatedFileExtension = "ts"
+  // `postgresqlExtensions`: citext (email case-insensitive, §3.1) dan pg_trgm
+  // (indeks trigram untuk pencarian ILIKE, §8) dideklarasikan di datasource
+  // agar ikut dikelola migrasi, bukan dibuat manual di luar Prisma.
+  previewFeatures        = ["postgresqlExtensions"]
 }
 
 datasource db {
-  provider = "postgresql"
+  provider   = "postgresql"
+  extensions = [citext, pg_trgm]
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Enum (domain model §4)
+// ─────────────────────────────────────────────────────────────────────────────
+
+enum UserRole {
+  ADMINISTRATOR
+  EDITOR
+  CONTRIBUTOR
+
+  @@map("user_role")
+}
+
+enum UserStatus {
+  ACTIVE
+  REVOKED
+
+  @@map("user_status")
+}
+
+enum MediaVisibility {
+  PUBLIC
+  PRIVATE
+
+  @@map("media_visibility")
+}
+
+enum MediaKind {
+  IMAGE
+  DOCUMENT
+
+  @@map("media_kind")
+}
+
+/// Dipakai Product.publishStatus dan Page.status.
+enum PublishStatus {
+  DRAFT
+  PUBLISHED
+
+  @@map("publish_status")
+}
+
+/// Dipakai Product.stockStatus (turunan) dan Product.stockStatusOverride.
+enum StockStatus {
+  IN_STOCK
+  LOW_STOCK
+  MADE_TO_ORDER
+
+  @@map("stock_status")
+}
+
+enum QcStage {
+  MATERIAL
+  FRAME
+  FINISHING
+  PACKAGING
+
+  @@map("qc_stage")
+}
+
+enum QcStatus {
+  PENDING
+  IN_PROGRESS
+  PASSED
+  FAILED
+
+  @@map("qc_status")
+}
+
+enum ArtisanStatus {
+  VERIFICATION
+  ACTIVE
+  FULL_CAPACITY
+
+  @@map("artisan_status")
+}
+
+enum ArtisanDocumentKind {
+  CONTRACT
+  IDENTITY
+  BANK_ACCOUNT
+  MATERIAL_ORIGIN
+  OTHER
+
+  @@map("artisan_document_kind")
+}
+
+enum ArticleStatus {
+  DRAFT
+  SCHEDULED
+  PUBLISHED
+
+  @@map("article_status")
+}
+
+enum CommentStatus {
+  PENDING
+  APPROVED
+  SPAM
+  DELETED
+
+  @@map("comment_status")
+}
+
+enum InquiryStatus {
+  NEW
+  IN_PROGRESS
+  DONE
+
+  @@map("inquiry_status")
+}
+
+enum ReplyStatus {
+  DRAFT
+  SENT
+  FAILED
+
+  @@map("reply_status")
+}
+
+enum BlockType {
+  HERO
+  STORY
+  PRODUCT_PREVIEW
+  PROCESS
+  TERMS
+  FOOTER
+  TESTIMONIAL
+  RICH_TEXT
+
+  @@map("block_type")
+}
+
+enum BlockVisibility {
+  ACTIVE
+  GLOBAL
+  HIDDEN
+
+  @@map("block_visibility")
+}
+
+enum BlockLayout {
+  LEFT
+  CENTER
+  BLEED
+
+  @@map("block_layout")
+}
+
+enum NavItemType {
+  PAGE
+  CATEGORY
+  ARTICLE_ARCHIVE
+  CUSTOM_LINK
+
+  @@map("nav_item_type")
+}
+
+enum NavItemStyle {
+  LINK
+  BUTTON
+
+  @@map("nav_item_style")
+}
+
+enum SiteLanguage {
+  ID
+  EN
+  BILINGUAL
+
+  @@map("site_language")
+}
+
+enum ActivityKind {
+  PRODUCT
+  QC
+  INQUIRY
+  ARTICLE
+  ARTISAN
+  COMMENT
+  PAGE
+  MEDIA
+  USER
+  SETTING
+
+  @@map("activity_kind")
+}
+
+enum SlugRedirectType {
+  PRODUCT
+  ARTICLE
+
+  @@map("slug_redirect_type")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Akses (§3.1)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Pengguna admin. Tidak pernah dihapus permanen (penulis artikel & pelaku log);
+/// "cabut akses" mengisi status REVOKED + revokedAt dan menghapus sesinya.
+model User {
+  id           String     @id @default(uuid()) @db.Uuid
+  /// citext: pembanding case-insensitive. Wajib berakhiran @ornament.id (cek API).
+  email        String     @unique @db.Citext
+  name         String
+  /// PRIVAT — argon2id. Tidak pernah masuk DTO.
+  passwordHash String     @map("password_hash")
+  role         UserRole
+  status       UserStatus @default(ACTIVE)
+  avatarId     String?    @map("avatar_id") @db.Uuid
+  lastActiveAt DateTime?  @map("last_active_at") @db.Timestamptz
+  revokedAt    DateTime?  @map("revoked_at") @db.Timestamptz
+  createdAt    DateTime   @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt    DateTime   @updatedAt @map("updated_at") @db.Timestamptz
+
+  avatar Media? @relation("UserAvatar", fields: [avatarId], references: [id], onDelete: SetNull)
+
+  sessions          Session[]
+  invitesSent       Invite[]          @relation("InviteInvitedBy")
+  mediaUploaded     Media[]           @relation("MediaUploadedBy")
+  articles          Article[]         @relation("ArticleAuthor")
+  productsCreated   Product[]         @relation("ProductCreatedBy")
+  productsUpdated   Product[]         @relation("ProductUpdatedBy")
+  productRevisions  ProductRevision[] @relation("ProductRevisionEditedBy")
+  qcChecks          ProductQcCheck[]  @relation("ProductQcCheckCheckedBy")
+  artisanDocuments  ArtisanDocument[] @relation("ArtisanDocumentUploadedBy")
+  commentsAuthored  Comment[]         @relation("CommentAuthorUser")
+  commentsModerated Comment[]         @relation("CommentModeratedBy")
+  inquiryReplies    InquiryReply[]    @relation("InquiryReplyAuthor")
+  pagesUpdated      Page[]            @relation("PageUpdatedBy")
+  siteSettings      SiteSetting[]     @relation("SiteSettingUpdatedBy")
+  activityLogs      ActivityLog[]     @relation("ActivityLogActor")
+
+  @@index([role])
+  @@index([status])
+  @@index([avatarId])
+  @@map("user")
+}
+
+/// PRIVAT — sesi cookie (ADR K7). Hanya SHA-256 token yang disimpan.
+model Session {
+  id                String   @id @default(uuid()) @db.Uuid
+  userId            String   @map("user_id") @db.Uuid
+  tokenHash         String   @unique @map("token_hash")
+  /// 12 jam; 30 hari bila "Ingat saya".
+  expiresAt         DateTime @map("expires_at") @db.Timestamptz
+  /// Batas atas sliding refresh.
+  absoluteExpiresAt DateTime @map("absolute_expires_at") @db.Timestamptz
+  lastSeenAt        DateTime @map("last_seen_at") @db.Timestamptz
+  userAgent         String?  @map("user_agent")
+  ip                String?
+  createdAt         DateTime @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt         DateTime @updatedAt @map("updated_at") @db.Timestamptz
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([expiresAt])
+  @@map("session")
+}
+
+/// PRIVAT — undangan pengguna, token sekali pakai (ADR K7, kedaluwarsa 72 jam).
+/// Hanya boleh ada satu undangan aktif per email: unik parsial
+/// `WHERE accepted_at IS NULL AND revoked_at IS NULL` (SQL manual di migrasi).
+model Invite {
+  id             String    @id @default(uuid()) @db.Uuid
+  email          String    @db.Citext
+  role           UserRole
+  tokenHash      String    @unique @map("token_hash")
+  expiresAt      DateTime  @map("expires_at") @db.Timestamptz
+  invitedById    String    @map("invited_by_id") @db.Uuid
+  acceptedAt     DateTime? @map("accepted_at") @db.Timestamptz
+  revokedAt      DateTime? @map("revoked_at") @db.Timestamptz
+  /// Hasil kirim Resend (ADR K4).
+  emailMessageId String?   @map("email_message_id")
+  emailError     String?   @map("email_error")
+  createdAt      DateTime  @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt      DateTime  @updatedAt @map("updated_at") @db.Timestamptz
+
+  invitedBy User @relation("InviteInvitedBy", fields: [invitedById], references: [id], onDelete: Restrict)
+
+  @@index([email])
+  @@index([invitedById])
+  @@map("invite")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Media (§3.2)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Berkas di R2. `PRIVATE` (dokumen pengrajin, lampiran inquiry) hanya lewat
+/// presigned GET; `PUBLIC` lewat domain publik R2 (ADR K3, domain model D8).
+model Media {
+  id           String          @id @default(uuid()) @db.Uuid
+  /// Key R2 `media/<yyyy>/<mm>/<id>-<slug>.<ext>`; berkas privat berprefix `private/`.
+  key          String          @unique
+  visibility   MediaVisibility @default(PUBLIC)
+  /// Diturunkan dari MIME; filter "Gambar / Dokumen".
+  kind         MediaKind
+  fileName     String          @map("file_name")
+  mimeType     String          @map("mime_type")
+  sizeBytes    BigInt          @map("size_bytes")
+  width        Int?
+  height       Int?
+  /// Wajib diisi sebelum dipakai pada konten publik (validasi di API).
+  alt          String?
+  /// Null bila diunggah pengunjung (lampiran inquiry).
+  uploadedById String?         @map("uploaded_by_id") @db.Uuid
+  createdAt    DateTime        @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt    DateTime        @updatedAt @map("updated_at") @db.Timestamptz
+  /// Trash (soft delete, domain model D3).
+  deletedAt    DateTime?       @map("deleted_at") @db.Timestamptz
+
+  uploadedBy User? @relation("MediaUploadedBy", fields: [uploadedById], references: [id], onDelete: SetNull)
+
+  userAvatars           User[]              @relation("UserAvatar")
+  productPrimaryImages  Product[]           @relation("ProductPrimaryImage")
+  productImages         ProductImage[]
+  artisanPhotos         Artisan[]           @relation("ArtisanPhoto")
+  artisanImages         ArtisanImage[]
+  artisanDocuments      ArtisanDocument[]
+  articleFeaturedImages Article[]           @relation("ArticleFeaturedImage")
+  pageBlockImages       PageBlock[]         @relation("PageBlockImage")
+  siteSettingLogos      SiteSetting[]       @relation("SiteSettingLogo")
+  siteSettingIcons      SiteSetting[]       @relation("SiteSettingIcon")
+  inquiryAttachments    InquiryAttachment[]
+
+  @@index([visibility])
+  @@index([kind])
+  @@index([uploadedById])
+  @@index([createdAt])
+  @@index([deletedAt])
+  @@map("media")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Taksonomi (§3.3)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Kategori produk, hierarkis (domain model D4). Slug unik termasuk baris di Trash.
+model Category {
+  id          String   @id @default(uuid()) @db.Uuid
+  name        String
+  slug        String   @unique
+  parentId    String?  @map("parent_id") @db.Uuid
+  description String?
+  /// Urutan dalam satu induk.
+  position    Int      @default(0)
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt   DateTime @updatedAt @map("updated_at") @db.Timestamptz
+
+  parent   Category?  @relation("CategoryParent", fields: [parentId], references: [id], onDelete: Restrict)
+  children Category[] @relation("CategoryParent")
+
+  products  Product[]
+  navItems  NavItem[]
+  inquiries Inquiry[]
+
+  @@index([parentId])
+  @@map("category")
+}
+
+/// Material produk: taksonomi yang bisa difilter, M:N dengan produk (D5).
+model Material {
+  id        String   @id @default(uuid()) @db.Uuid
+  name      String   @unique
+  slug      String   @unique
+  /// Kode SKU 3 huruf (mis. RTN, TEK) untuk saran SKU §6.2.
+  skuCode   String?  @unique @map("sku_code") @db.VarChar(3)
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz
+
+  products  ProductMaterial[]
+  inquiries Inquiry[]
+
+  @@map("material")
+}
+
+/// Kategori artikel, datar (D4/Q4). Dikelola di layar taksonomi yang sama.
+model ArticleCategory {
+  id          String   @id @default(uuid()) @db.Uuid
+  name        String   @unique
+  slug        String   @unique
+  description String?
+  /// Urutan chip/filter di journal.
+  position    Int      @default(0)
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt   DateTime @updatedAt @map("updated_at") @db.Timestamptz
+
+  articles Article[]
+
+  @@map("article_category")
+}
+
+/// Label bebas yang dipakai bersama produk dan artikel (D5).
+model Tag {
+  id        String   @id @default(uuid()) @db.Uuid
+  name      String
+  /// Dinormalisasi huruf kecil; tag yang sama dipakai ulang.
+  slug      String   @unique
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz
+
+  products ProductTag[]
+  articles ArticleTag[]
+
+  @@map("tag")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Pengrajin (§3.4)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Pengrajin/workshop. Tidak masuk Trash; diarsipkan lewat archivedAt (D3).
+model Artisan {
+  id               String        @id @default(uuid()) @db.Uuid
+  /// Nama workshop.
+  name             String
+  slug             String        @unique
+  /// PRIVAT — nama penanggung jawab.
+  contactName      String?       @map("contact_name")
+  /// PRIVAT — format E.164.
+  phone            String?
+  partnerSinceYear Int?          @map("partner_since_year")
+  village          String?
+  /// Kabupaten; filter "daerah" di tabel produk.
+  regency          String
+  province         String
+  /// PRIVAT — alamat detail (jalan, RT/RW).
+  address          String?
+  craftsmenCount   Int?          @map("craftsmen_count")
+  monthlyCapacity  Int?          @map("monthly_capacity")
+  capacityUnit     String        @default("pcs") @map("capacity_unit")
+  avgLeadTimeDays  Int?          @map("avg_lead_time_days")
+  /// Keahlian; elemen pertama = keahlian utama.
+  skills           String[]
+  /// Ringkasan untuk kartu/daftar. Publik.
+  summary          String?
+  /// Profil publik (rich text, JSON — domain model D7).
+  story            Json?
+  /// PRIVAT — kekuatan, keterbatasan, catatan negosiasi.
+  internalNotes    String?       @map("internal_notes")
+  status           ArtisanStatus @default(VERIFICATION)
+  /// Foto workshop utama.
+  photoId          String?       @map("photo_id") @db.Uuid
+  /// "Arsipkan"; produk terbitnya tetap tayang (§6.7).
+  archivedAt       DateTime?     @map("archived_at") @db.Timestamptz
+  createdAt        DateTime      @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt        DateTime      @updatedAt @map("updated_at") @db.Timestamptz
+
+  photo Media? @relation("ArtisanPhoto", fields: [photoId], references: [id], onDelete: SetNull)
+
+  products  Product[]
+  images    ArtisanImage[]
+  documents ArtisanDocument[]
+
+  @@index([regency])
+  @@index([status])
+  @@index([archivedAt])
+  @@index([photoId])
+  @@map("artisan")
+}
+
+/// Galeri publik pengrajin. PK komposit (artisanId, mediaId).
+model ArtisanImage {
+  artisanId String   @map("artisan_id") @db.Uuid
+  mediaId   String   @map("media_id") @db.Uuid
+  position  Int
+  caption   String?
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz
+
+  artisan Artisan @relation(fields: [artisanId], references: [id], onDelete: Cascade)
+  media   Media   @relation(fields: [mediaId], references: [id], onDelete: Restrict)
+
+  @@id([artisanId, mediaId])
+  @@index([mediaId])
+  @@map("artisan_image")
+}
+
+/// PRIVAT — dokumen pengrajin (perjanjian, KTP, rekening, legalitas material).
+/// Media wajib `PRIVATE` (dicek API); akses Administrator/Editor via presigned GET.
+model ArtisanDocument {
+  id           String              @id @default(uuid()) @db.Uuid
+  artisanId    String              @map("artisan_id") @db.Uuid
+  mediaId      String              @map("media_id") @db.Uuid
+  kind         ArtisanDocumentKind
+  title        String
+  uploadedById String?             @map("uploaded_by_id") @db.Uuid
+  createdAt    DateTime            @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt    DateTime            @updatedAt @map("updated_at") @db.Timestamptz
+
+  artisan    Artisan @relation(fields: [artisanId], references: [id], onDelete: Cascade)
+  media      Media   @relation(fields: [mediaId], references: [id], onDelete: Restrict)
+  uploadedBy User?   @relation("ArtisanDocumentUploadedBy", fields: [uploadedById], references: [id], onDelete: SetNull)
+
+  @@index([artisanId])
+  @@index([artisanId, kind])
+  @@index([mediaId])
+  @@index([uploadedById])
+  @@map("artisan_document")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Produk (§3.5)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Produk katalog. Slug dan SKU unik **termasuk baris di Trash** (§6.1, §6.2),
+/// jadi unik biasa (bukan parsial) memang yang dibutuhkan.
+model Product {
+  id                  String        @id @default(uuid()) @db.Uuid
+  name                String
+  slug                String        @unique
+  /// Null saat draf, wajib saat publish (§6.2/A4). Unik termasuk di Trash.
+  sku                 String?       @unique
+  /// Rich text JSON (D7).
+  description         Json?
+  excerpt             String?
+  categoryId          String        @map("category_id") @db.Uuid
+  /// Null saat draf, wajib saat publish.
+  artisanId           String?       @map("artisan_id") @db.Uuid
+  moqQuantity         Int           @map("moq_quantity")
+  /// pcs / set / panel. Juga satuan stok.
+  moqUnit             String        @map("moq_unit")
+  leadTimeDays        Int?          @map("lead_time_days")
+  lengthCm            Decimal?      @map("length_cm") @db.Decimal(7, 1)
+  widthCm             Decimal?      @map("width_cm") @db.Decimal(7, 1)
+  heightCm            Decimal?      @map("height_cm") @db.Decimal(7, 1)
+  weightKg            Decimal?      @map("weight_kg") @db.Decimal(7, 2)
+  /// Harga FOB per unit. Publik bila diisi (Q7); null → "Inquire for pricing".
+  fobPriceUsd         Decimal?      @map("fob_price_usd") @db.Decimal(10, 2)
+  fobPort             String?       @default("Semarang") @map("fob_port")
+  /// Turunan yang disimpan; dihitung server setiap simpan (§6.3, Q13).
+  stockStatus         StockStatus   @map("stock_status")
+  /// PRIVAT — override manual. Null = otomatis.
+  stockStatusOverride StockStatus?  @map("stock_status_override")
+  /// Wajib null bila status efektif MADE_TO_ORDER (A11).
+  stockQuantity       Int?          @map("stock_quantity")
+  /// PRIVAT — ambang Low Stock per produk (>= 0); null = SiteSetting.lowStockThreshold.
+  lowStockThreshold   Int?          @map("low_stock_threshold")
+  /// PRIVAT — catatan internal.
+  stockNote           String?       @map("stock_note")
+  publishStatus       PublishStatus @default(DRAFT) @map("publish_status")
+  publishedAt         DateTime?     @map("published_at") @db.Timestamptz
+  /// Wajib saat publish.
+  primaryImageId      String?       @map("primary_image_id") @db.Uuid
+  revision            Int           @default(1)
+  /// Jejak asal duplikat (§6.3).
+  duplicatedFromId    String?       @map("duplicated_from_id") @db.Uuid
+  createdById         String?       @map("created_by_id") @db.Uuid
+  updatedById         String?       @map("updated_by_id") @db.Uuid
+  createdAt           DateTime      @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt           DateTime      @updatedAt @map("updated_at") @db.Timestamptz
+  /// Trash (§6.4).
+  deletedAt           DateTime?     @map("deleted_at") @db.Timestamptz
+
+  category       Category  @relation(fields: [categoryId], references: [id], onDelete: Restrict)
+  artisan        Artisan?  @relation(fields: [artisanId], references: [id], onDelete: Restrict)
+  primaryImage   Media?    @relation("ProductPrimaryImage", fields: [primaryImageId], references: [id], onDelete: SetNull)
+  duplicatedFrom Product?  @relation("ProductDuplicatedFrom", fields: [duplicatedFromId], references: [id], onDelete: SetNull)
+  duplicates     Product[] @relation("ProductDuplicatedFrom")
+  createdBy      User?     @relation("ProductCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
+  updatedBy      User?     @relation("ProductUpdatedBy", fields: [updatedById], references: [id], onDelete: SetNull)
+
+  materials ProductMaterial[]
+  tags      ProductTag[]
+  images    ProductImage[]
+  specs     ProductSpec[]
+  qcChecks  ProductQcCheck[]
+  revisions ProductRevision[]
+  redirects SlugRedirect[]
+
+  @@index([categoryId])
+  @@index([artisanId])
+  @@index([stockStatus])
+  @@index([publishStatus])
+  @@index([publishedAt])
+  @@index([deletedAt])
+  /// Katalog publik (§3.5).
+  @@index([publishStatus, deletedAt, categoryId])
+  @@index([primaryImageId])
+  @@index([duplicatedFromId])
+  @@index([createdById])
+  @@index([updatedById])
+  /// Pencarian admin `q` memakai ILIKE pada name/sku (domain model §8, kontrak
+  /// §5.6): indeks trigram GIN, bukan full-text search.
+  @@index([name(ops: raw("gin_trgm_ops"))], type: Gin)
+  @@index([sku(ops: raw("gin_trgm_ops"))], type: Gin)
+  @@map("product")
+}
+
+/// M:N produk ↔ material. Maksimal satu isPrimary per produk (unik parsial di
+/// SQL migrasi); tepat satu wajib saat publish.
+model ProductMaterial {
+  productId  String   @map("product_id") @db.Uuid
+  materialId String   @map("material_id") @db.Uuid
+  isPrimary  Boolean  @default(false) @map("is_primary")
+  createdAt  DateTime @default(now()) @map("created_at") @db.Timestamptz
+
+  product  Product  @relation(fields: [productId], references: [id], onDelete: Cascade)
+  material Material @relation(fields: [materialId], references: [id], onDelete: Restrict)
+
+  @@id([productId, materialId])
+  @@index([materialId])
+  @@map("product_material")
+}
+
+model ProductTag {
+  productId String   @map("product_id") @db.Uuid
+  tagId     String   @map("tag_id") @db.Uuid
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz
+
+  product Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+  tag     Tag     @relation(fields: [tagId], references: [id], onDelete: Cascade)
+
+  @@id([productId, tagId])
+  @@index([tagId])
+  @@map("product_tag")
+}
+
+/// Galeri produk; **tidak** memuat foto utama (Product.primaryImageId).
+model ProductImage {
+  productId String   @map("product_id") @db.Uuid
+  mediaId   String   @map("media_id") @db.Uuid
+  position  Int
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz
+
+  product Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+  media   Media   @relation(fields: [mediaId], references: [id], onDelete: Restrict)
+
+  @@id([productId, mediaId])
+  @@index([mediaId])
+  @@map("product_image")
+}
+
+/// Baris spesifikasi tambahan per produk (di luar field inti Product).
+model ProductSpec {
+  id        String   @id @default(uuid()) @db.Uuid
+  productId String   @map("product_id") @db.Uuid
+  label     String
+  value     String
+  position  Int
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz
+
+  product Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  @@index([productId])
+  @@map("product_spec")
+}
+
+/// Checklist QC per produk: empat baris (satu per stage) dibuat bersama produk.
+model ProductQcCheck {
+  id          String    @id @default(uuid()) @db.Uuid
+  productId   String    @map("product_id") @db.Uuid
+  stage       QcStage
+  status      QcStatus  @default(PENDING)
+  /// Kriteria lulus yang ditampilkan publik.
+  criteria    String?
+  /// PRIVAT.
+  notes       String?
+  checkedById String?   @map("checked_by_id") @db.Uuid
+  checkedAt   DateTime? @map("checked_at") @db.Timestamptz
+  createdAt   DateTime  @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt   DateTime  @updatedAt @map("updated_at") @db.Timestamptz
+
+  product   Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+  checkedBy User?   @relation("ProductQcCheckCheckedBy", fields: [checkedById], references: [id], onDelete: SetNull)
+
+  @@unique([productId, stage])
+  @@index([checkedById])
+  @@map("product_qc_check")
+}
+
+/// PRIVAT — snapshot produk per revisi (§6.3).
+model ProductRevision {
+  id         String   @id @default(uuid()) @db.Uuid
+  productId  String   @map("product_id") @db.Uuid
+  number     Int
+  /// Isi produk beserta relasinya pada revisi ini.
+  snapshot   Json
+  editedById String?  @map("edited_by_id") @db.Uuid
+  createdAt  DateTime @default(now()) @map("created_at") @db.Timestamptz
+
+  product  Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+  editedBy User?   @relation("ProductRevisionEditedBy", fields: [editedById], references: [id], onDelete: SetNull)
+
+  @@unique([productId, number])
+  @@index([editedById])
+  @@map("product_revision")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Artikel & komentar (§3.6)
+// ─────────────────────────────────────────────────────────────────────────────
+
+model Article {
+  id              String        @id @default(uuid()) @db.Uuid
+  title           String
+  slug            String        @unique
+  excerpt         String?
+  /// Array blok ArticleBlock (JSON, D7); divalidasi Zod di @ornament/shared.
+  content         Json
+  /// Null saat draf (Q1); wajib saat jadwal/publish.
+  categoryId      String?       @map("category_id") @db.Uuid
+  authorId        String        @map("author_id") @db.Uuid
+  featuredImageId String?       @map("featured_image_id") @db.Uuid
+  status          ArticleStatus @default(DRAFT)
+  /// Wajib bila SCHEDULED.
+  publishAt       DateTime?     @map("publish_at") @db.Timestamptz
+  /// Tanggal yang ditampilkan publik.
+  publishedAt     DateTime?     @map("published_at") @db.Timestamptz
+  wordCount       Int           @map("word_count")
+  createdAt       DateTime      @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt       DateTime      @updatedAt @map("updated_at") @db.Timestamptz
+  /// Trash.
+  deletedAt       DateTime?     @map("deleted_at") @db.Timestamptz
+
+  category      ArticleCategory? @relation(fields: [categoryId], references: [id], onDelete: Restrict)
+  author        User             @relation("ArticleAuthor", fields: [authorId], references: [id], onDelete: Restrict)
+  featuredImage Media?           @relation("ArticleFeaturedImage", fields: [featuredImageId], references: [id], onDelete: SetNull)
+
+  tags      ArticleTag[]
+  comments  Comment[]
+  redirects SlugRedirect[]
+
+  @@index([categoryId])
+  @@index([authorId])
+  @@index([status])
+  @@index([publishAt])
+  @@index([publishedAt])
+  @@index([deletedAt])
+  @@index([featuredImageId])
+  @@map("article")
+}
+
+model ArticleTag {
+  articleId String   @map("article_id") @db.Uuid
+  tagId     String   @map("tag_id") @db.Uuid
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz
+
+  article Article @relation(fields: [articleId], references: [id], onDelete: Cascade)
+  tag     Tag     @relation(fields: [tagId], references: [id], onDelete: Cascade)
+
+  @@id([articleId, tagId])
+  @@index([tagId])
+  @@map("article_tag")
+}
+
+/// Komentar artikel; nesting maksimal 1 tingkat (dijaga API).
+/// CHECK di SQL migrasi: authorUserId, authorEmail, atau anonymizedAt terisi.
+model Comment {
+  id            String        @id @default(uuid()) @db.Uuid
+  articleId     String        @map("article_id") @db.Uuid
+  parentId      String?       @map("parent_id") @db.Uuid
+  authorName    String        @map("author_name")
+  /// PRIVAT — wajib untuk komentar pengunjung (Q9); null untuk balasan admin
+  /// atau setelah dianonimkan.
+  authorEmail   String?       @map("author_email")
+  /// Terisi bila yang menulis admin (balasan).
+  authorUserId  String?       @map("author_user_id") @db.Uuid
+  /// Teks polos, maks 2000 karakter (dicek API).
+  body          String
+  status        CommentStatus @default(PENDING)
+  moderatedById String?       @map("moderated_by_id") @db.Uuid
+  moderatedAt   DateTime?     @map("moderated_at") @db.Timestamptz
+  /// PRIVAT — rate limit/anti-spam; dikosongkan setelah 30 hari (§6.11).
+  ipHash        String?       @map("ip_hash")
+  /// PRIVAT — dikosongkan bersama ipHash.
+  userAgent     String?       @map("user_agent")
+  /// Disiapkan untuk notifikasi balasan; belum dipakai di fase ini.
+  notifyOnReply Boolean       @default(false) @map("notify_on_reply")
+  anonymizedAt  DateTime?     @map("anonymized_at") @db.Timestamptz
+  createdAt     DateTime      @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt     DateTime      @updatedAt @map("updated_at") @db.Timestamptz
+
+  article     Article   @relation(fields: [articleId], references: [id], onDelete: Cascade)
+  parent      Comment?  @relation("CommentParent", fields: [parentId], references: [id], onDelete: Cascade)
+  replies     Comment[] @relation("CommentParent")
+  authorUser  User?     @relation("CommentAuthorUser", fields: [authorUserId], references: [id], onDelete: SetNull)
+  moderatedBy User?     @relation("CommentModeratedBy", fields: [moderatedById], references: [id], onDelete: SetNull)
+
+  @@index([articleId, status, createdAt])
+  @@index([parentId])
+  @@index([status])
+  @@index([anonymizedAt])
+  @@index([authorUserId])
+  @@index([moderatedById])
+  @@map("comment")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Inquiry (§3.7)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// PRIVAT seluruhnya — tidak pernah diekspos ke publik; submit hanya
+/// mengembalikan `reference`. CHECK di SQL migrasi: email atau anonymizedAt terisi.
+model Inquiry {
+  id                    String        @id @default(uuid()) @db.Uuid
+  number                Int           @unique @default(autoincrement())
+  /// `INQ-0001` (§6.5).
+  reference             String        @unique
+  /// Dihasilkan otomatis saat submit (§6.5); tidak bisa diedit.
+  subject               String
+  name                  String
+  company               String?
+  /// PRIVAT — wajib saat submit; null hanya setelah dianonimkan.
+  email                 String?
+  /// Negara tujuan (teks bebas).
+  country               String?
+  /// Null = "Belum menentukan".
+  categoryId            String?       @map("category_id") @db.Uuid
+  /// Snapshot nama kategori saat submit.
+  categoryLabel         String?       @map("category_label")
+  /// Null = "Terbuka untuk saran".
+  materialId            String?       @map("material_id") @db.Uuid
+  materialLabel         String?       @map("material_label")
+  volumeQuantity        Int           @map("volume_quantity")
+  /// Teks bebas dari form (Q10).
+  targetShipText        String?       @map("target_ship_text")
+  /// Diturunkan server dari targetShipText bila terbaca (§6.5); bisa dikoreksi admin.
+  targetShipDate        DateTime?     @map("target_ship_date") @db.Date
+  destinationPort       String?       @map("destination_port")
+  budgetPerUnitUsd      Decimal?      @map("budget_per_unit_usd") @db.Decimal(10, 2)
+  message               String?
+  status                InquiryStatus @default(NEW)
+  readAt                DateTime?     @map("read_at") @db.Timestamptz
+  completedAt           DateTime?     @map("completed_at") @db.Timestamptz
+  /// PRIVAT — anti-spam; dikosongkan setelah 30 hari (§6.11).
+  ipHash                String?       @map("ip_hash")
+  userAgent             String?       @map("user_agent")
+  /// Hasil kirim email notifikasi ke tim.
+  notificationMessageId String?       @map("notification_message_id")
+  notificationError     String?       @map("notification_error")
+  anonymizedAt          DateTime?     @map("anonymized_at") @db.Timestamptz
+  createdAt             DateTime      @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt             DateTime      @updatedAt @map("updated_at") @db.Timestamptz
+
+  category Category? @relation(fields: [categoryId], references: [id], onDelete: SetNull)
+  material Material? @relation(fields: [materialId], references: [id], onDelete: SetNull)
+
+  replies     InquiryReply[]
+  attachments InquiryAttachment[]
+
+  @@index([email])
+  @@index([status, createdAt])
+  @@index([targetShipDate])
+  @@index([anonymizedAt])
+  @@index([categoryId])
+  @@index([materialId])
+  @@map("inquiry")
+}
+
+/// PRIVAT — balasan inquiry (dikirim lewat Resend setelah commit, ADR K4).
+model InquiryReply {
+  id             String      @id @default(uuid()) @db.Uuid
+  inquiryId      String      @map("inquiry_id") @db.Uuid
+  authorId       String      @map("author_id") @db.Uuid
+  /// Diambil dari Inquiry.email saat dikirim; dikosongkan saat anonimisasi.
+  toEmail        String?     @map("to_email")
+  subject        String
+  /// Dikosongkan saat anonimisasi (§6.11).
+  body           String?
+  status         ReplyStatus
+  sentAt         DateTime?   @map("sent_at") @db.Timestamptz
+  emailMessageId String?     @map("email_message_id")
+  emailError     String?     @map("email_error")
+  createdAt      DateTime    @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt      DateTime    @updatedAt @map("updated_at") @db.Timestamptz
+
+  inquiry Inquiry @relation(fields: [inquiryId], references: [id], onDelete: Cascade)
+  author  User    @relation("InquiryReplyAuthor", fields: [authorId], references: [id], onDelete: Restrict)
+
+  attachments InquiryAttachment[]
+
+  @@index([inquiryId])
+  @@index([status])
+  @@index([authorId])
+  @@map("inquiry_reply")
+}
+
+/// PRIVAT — lampiran. replyId null = lampiran dari pembeli; terisi = lampiran
+/// penawaran pada balasan. Media wajib PRIVATE (dicek API).
+model InquiryAttachment {
+  id        String   @id @default(uuid()) @db.Uuid
+  inquiryId String   @map("inquiry_id") @db.Uuid
+  replyId   String?  @map("reply_id") @db.Uuid
+  mediaId   String   @map("media_id") @db.Uuid
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz
+
+  inquiry Inquiry       @relation(fields: [inquiryId], references: [id], onDelete: Cascade)
+  reply   InquiryReply? @relation(fields: [replyId], references: [id], onDelete: Cascade)
+  media   Media         @relation(fields: [mediaId], references: [id], onDelete: Restrict)
+
+  @@index([inquiryId])
+  @@index([replyId])
+  @@index([mediaId])
+  @@map("inquiry_attachment")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Situs: halaman, navigasi, pengaturan, log (§3.8)
+// ─────────────────────────────────────────────────────────────────────────────
+
+model Page {
+  id              String        @id @default(uuid()) @db.Uuid
+  title           String
+  path            String        @unique
+  /// `home`, `catalog`, `contact`, …: halaman yang punya route kode.
+  /// Tidak bisa masuk Trash dan path-nya tidak bisa diubah (§6.9).
+  systemKey       String?       @unique @map("system_key")
+  status          PublishStatus
+  metaTitle       String?       @map("meta_title")
+  metaDescription String?       @map("meta_description")
+  updatedById     String?       @map("updated_by_id") @db.Uuid
+  createdAt       DateTime      @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt       DateTime      @updatedAt @map("updated_at") @db.Timestamptz
+  /// Trash.
+  deletedAt       DateTime?     @map("deleted_at") @db.Timestamptz
+
+  updatedBy User? @relation("PageUpdatedBy", fields: [updatedById], references: [id], onDelete: SetNull)
+
+  blocks   PageBlock[]
+  navItems NavItem[]
+
+  @@index([status])
+  @@index([deletedAt])
+  @@index([updatedById])
+  @@map("page")
+}
+
+/// Blok Page Builder. `pageId = null` ⇔ `visibility = GLOBAL` (blok global D10,
+/// CHECK di SQL migrasi): satu baris dipakai di semua halaman.
+model PageBlock {
+  id         String          @id @default(uuid()) @db.Uuid
+  pageId     String?         @map("page_id") @db.Uuid
+  type       BlockType
+  /// Label di builder, mis. "Hero — Good Value".
+  name       String
+  visibility BlockVisibility
+  /// Urutan dalam halaman; blok global dirender di akhir, diurutkan dengan ini.
+  position   Int
+  layout     BlockLayout     @default(LEFT)
+  title      String?
+  body       String?
+  cta1Label  String?         @map("cta1_label")
+  cta1Url    String?         @map("cta1_url")
+  cta2Label  String?         @map("cta2_label")
+  cta2Url    String?         @map("cta2_url")
+  imageId    String?         @map("image_id") @db.Uuid
+  /// Opsi khusus tipe, mis. `{ "productCount": 6 }` untuk PRODUCT_PREVIEW.
+  config     Json?
+  createdAt  DateTime        @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt  DateTime        @updatedAt @map("updated_at") @db.Timestamptz
+
+  page  Page?  @relation(fields: [pageId], references: [id], onDelete: Cascade)
+  image Media? @relation("PageBlockImage", fields: [imageId], references: [id], onDelete: SetNull)
+
+  @@index([pageId, position])
+  @@index([imageId])
+  @@map("page_block")
+}
+
+/// Menu satu tingkat. CHECK di SQL migrasi: target sesuai `type`.
+model NavItem {
+  id         String       @id @default(uuid()) @db.Uuid
+  label      String
+  type       NavItemType
+  /// Wajib bila PAGE.
+  pageId     String?      @map("page_id") @db.Uuid
+  /// Wajib bila CATEGORY.
+  categoryId String?      @map("category_id") @db.Uuid
+  /// Wajib bila CUSTOM_LINK; untuk tipe lain diturunkan.
+  url        String?
+  style      NavItemStyle
+  position   Int
+  createdAt  DateTime     @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt  DateTime     @updatedAt @map("updated_at") @db.Timestamptz
+
+  page     Page?     @relation(fields: [pageId], references: [id], onDelete: Cascade)
+  category Category? @relation(fields: [categoryId], references: [id], onDelete: Cascade)
+
+  @@index([position])
+  @@index([pageId])
+  @@index([categoryId])
+  @@map("nav_item")
+}
+
+/// Pengaturan situs, satu baris bertipe dengan id tetap `1` (D11; CHECK di SQL
+/// migrasi). Bukan key-value agar tipe & validasinya dijaga Prisma + Zod.
+model SiteSetting {
+  /// Selalu `1` (CHECK di SQL migrasi); default agar upsert singleton ringkas.
+  id                Int          @id @default(1)
+  siteName          String       @map("site_name")
+  tagline           String?
+  contactEmail      String       @map("contact_email")
+  instagramHandle   String?      @map("instagram_handle")
+  instagramUrl      String?      @map("instagram_url")
+  siteLanguage      SiteLanguage @map("site_language")
+  /// IANA; default Asia/Jakarta.
+  timezone          String       @default("Asia/Jakarta")
+  /// Alamat workshop (publik).
+  address           String?
+  logoId            String?      @map("logo_id") @db.Uuid
+  iconId            String?      @map("icon_id") @db.Uuid
+  seoHomeTitle      String?      @map("seo_home_title")
+  seoKeywords       String?      @map("seo_keywords")
+  seoDescription    String?      @map("seo_description") @db.VarChar(160)
+  sitemapEnabled    Boolean      @default(true) @map("sitemap_enabled")
+  /// false = noindex.
+  allowIndexing     Boolean      @default(true) @map("allow_indexing")
+  /// PRIVAT — ambang Low Stock global (>= 0) bila Product.lowStockThreshold null (Q13).
+  lowStockThreshold Int          @default(10) @map("low_stock_threshold")
+  updatedById       String?      @map("updated_by_id") @db.Uuid
+  createdAt         DateTime     @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt         DateTime     @updatedAt @map("updated_at") @db.Timestamptz
+
+  logo      Media? @relation("SiteSettingLogo", fields: [logoId], references: [id], onDelete: SetNull)
+  icon      Media? @relation("SiteSettingIcon", fields: [iconId], references: [id], onDelete: SetNull)
+  updatedBy User?  @relation("SiteSettingUpdatedBy", fields: [updatedById], references: [id], onDelete: SetNull)
+
+  @@index([logoId])
+  @@index([iconId])
+  @@index([updatedById])
+  @@map("site_setting")
+}
+
+/// Slug lama produk/artikel untuk redirect 301 (Q8, §6.10). Menunjuk **entitas**,
+/// bukan slug baru, sehingga tidak pernah ada rantai redirect.
+/// CHECK di SQL migrasi: tepat satu dari productId/articleId sesuai `type`.
+model SlugRedirect {
+  id        String           @id @default(uuid()) @db.Uuid
+  type      SlugRedirectType
+  fromSlug  String           @map("from_slug")
+  productId String?          @map("product_id") @db.Uuid
+  articleId String?          @map("article_id") @db.Uuid
+  createdAt DateTime         @default(now()) @map("created_at") @db.Timestamptz
+
+  product Product? @relation(fields: [productId], references: [id], onDelete: Cascade)
+  article Article? @relation(fields: [articleId], references: [id], onDelete: Cascade)
+
+  @@unique([type, fromSlug])
+  @@index([productId])
+  @@index([articleId])
+  @@map("slug_redirect")
+}
+
+/// Feed aktivitas admin, append-only (§3.8). Referensi entitas polimorfik
+/// (entityType/entityId) sengaja tanpa FK.
+model ActivityLog {
+  id         String       @id @default(uuid()) @db.Uuid
+  kind       ActivityKind
+  /// Kode, mis. `product.published`, `inquiry.created`.
+  action     String
+  /// Teks siap tampil, dibuat saat kejadian.
+  message    String
+  /// Null = "Sistem" (submit publik, job).
+  actorId    String?      @map("actor_id") @db.Uuid
+  /// `Product`, `Inquiry`, … (polimorfik, tanpa FK).
+  entityType String?      @map("entity_type")
+  entityId   String?      @map("entity_id") @db.Uuid
+  metadata   Json?
+  createdAt  DateTime     @default(now()) @map("created_at") @db.Timestamptz
+
+  actor User? @relation("ActivityLogActor", fields: [actorId], references: [id], onDelete: SetNull)
+
+  @@index([kind])
+  @@index([actorId])
+  @@index([entityType, entityId])
+  @@index([createdAt])
+  @@map("activity_log")
 }

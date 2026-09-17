@@ -23,6 +23,8 @@
   "include": [
     "src/**/*.ts",
     "test/**/*.ts",
+    "prisma/seed.ts",
+    "prisma/seed/**/*.ts",
     "prisma.config.ts",
     "vitest.config.ts",
     "eslint.config.js"
