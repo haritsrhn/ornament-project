@@ -9,7 +9,6 @@ const emptyToUndefined = (value: unknown) => (value === '' ? undefined : value);
 const optionalString = z.preprocess(emptyToUndefined, z.string().optional());
 const optionalUrl = z.preprocess(emptyToUndefined, z.url().optional());
 
-
 const SECRET_KEYS = ['INTERNAL_API_KEY', 'INTERNAL_JOB_TOKEN', 'REVALIDATE_SECRET'] as const;
 
 const envSchema = z

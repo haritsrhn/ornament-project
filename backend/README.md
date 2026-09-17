@@ -4,10 +4,11 @@ API untuk situs publik dan admin CMS. Fastify 5 + TypeScript (ESM, strict),
 berjalan di Node.js 24. Keputusan arsitektur ada di
 [`docs/adr/0001-arsitektur-backend.md`](docs/adr/0001-arsitektur-backend.md).
 
-**Status: fondasi (T1.1–T1.2).** Server bisa dijalankan dengan satu rute
-sementara `GET /v1`, terhubung ke PostgreSQL lewat Prisma, dan memvalidasi env
-saat startup. Format error, validasi Zod request, dan health check (T1.3), tes &
-CI (T1.4), paket `@ornament/shared` (T1.5), serta model domain (Tahap 2) menyusul.
+**Status: fondasi (T1.1–T1.3).** Server terhubung ke PostgreSQL lewat Prisma,
+memvalidasi env saat startup, dan punya middleware inti: format error kontrak,
+validasi request/response dengan Zod, request ID + logging, serta health check.
+Tes & CI (T1.4), paket `@ornament/shared` (T1.5), serta model domain (Tahap 2)
+menyusul.
 
 ## Struktur
 
@@ -16,7 +17,13 @@ src/
   app.ts               buildApp() — merakit instance Fastify tanpa listen (dipakai server & tes)
   server.ts            entry: loadEnv(), cek DB (SELECT 1), listen, graceful shutdown
   config/env.ts        loadEnv() — skema Zod untuk process.env
+  lib/errors.ts        AppError + katalog kode error kontrak §1.10 + helper (notFound(), …)
+  lib/http.ts          envelope sukses: ok(), dataEnvelope() (kontrak §1.4)
   plugins/prisma.ts    registerPrisma() — decorate app.prisma + $disconnect saat onClose
+  plugins/validation.ts  validator/serializer Zod, locale pesan Indonesia, hanya body JSON
+  plugins/error-handler.ts  setErrorHandler + setNotFoundHandler → envelope error kontrak §1.5
+  plugins/logger.ts    opsi pino (LOG_LEVEL, redaksi, pretty di dev) + X-Request-Id
+  routes/health.ts     GET /v1/health, GET /v1/health/ready
   generated/prisma/    Prisma Client hasil generate (tidak di-commit)
 prisma/
   schema.prisma        datasource + generator (belum ada model domain)
@@ -39,7 +46,7 @@ npm run db:up                     # di root; PostgreSQL 18 di localhost:5432, tu
 cp backend/.env.example backend/.env
 npm run db:migrate --workspace backend   # terapkan migrasi ke DB dev
 npm run dev --workspace backend   # tsx watch, http://localhost:4000
-curl http://localhost:4000/v1     # {"data":{"name":"ornament-api"}}
+curl http://localhost:4000/v1/health   # {"data":{"status":"ok"}}
 ```
 
 `npm run db:down` (root) mematikan container; data tetap di volume
@@ -106,6 +113,83 @@ dicetak). `dev` dan `start` memuat `backend/.env` bila ada
 
 Di `NODE_ENV=production`, `INTERNAL_API_KEY`, `INTERNAL_JOB_TOKEN`, dan
 `REVALIDATE_SECRET` (bila di-set) minimal 32 karakter.
+
+## HTTP API: konvensi dasar
+
+Spesifikasi lengkap di [`docs/api-contract.md`](docs/api-contract.md) §1.
+
+### Health check
+
+| Endpoint | Arti | Respons |
+| --- | --- | --- |
+| `GET /v1/health` | Liveness — proses hidup; tidak menyentuh DB | `200 {"data":{"status":"ok"}}` |
+| `GET /v1/health/ready` | Readiness — `SELECT 1` ke DB (timeout 2 dtk) | `200 {"data":{"status":"ok"}}`, atau `503 SERVICE_UNAVAILABLE` bila DB tak terjangkau / app dibangun tanpa DB |
+
+Log request liveness hanya muncul di level `warn` ke atas agar probe tidak
+membanjiri log.
+
+### Format error
+
+Semua error — termasuk rute tak dikenal, JSON rusak, body > 1 MB, Content-Type
+selain `application/json`, gagal validasi, dan error tak terduga — dikirim sebagai:
+
+```json
+{
+  "error": {
+    "code": "VALIDATION_FAILED",
+    "message": "Beberapa field tidak valid.",
+    "details": [{ "path": "materials[0].materialId", "code": "invalid_format", "message": "UUID tidak valid" }],
+    "requestId": "3f0b8a0e-3a55-4b52-9b1a-2c4f7c1a0d11"
+  }
+}
+```
+
+- `code` dari katalog kontrak §1.10 (`ErrorCode` di `src/lib/errors.ts`).
+  `details` hanya ada bila relevan.
+- 5xx: stack & `cause` dicatat di log; respons hanya `INTERNAL_ERROR` generik.
+- Di modul, cukup `throw`: `throw notFound()`, `throw conflict(['slug'])`,
+  `throw new AppError('INVALID_STATE', 'Pesan.', { details: { current, allowed } })`.
+- `X-Request-Id` masuk dipakai bila berupa `[A-Za-z0-9._:-]{1,128}`, selain itu
+  dibuat UUID baru. Selalu dikembalikan di header respons dan di `error.requestId`.
+- Log pino menyensor `cookie`, `authorization`, `x-internal-key`,
+  `x-revalidate-secret`, `set-cookie`, `x-client-ip`, dan field `password`.
+  `pino-pretty` (devDependency) hanya dipakai saat `NODE_ENV=development`.
+
+### Menulis rute dengan skema Zod
+
+```ts
+import type { FastifyPluginAsyncZod } from 'fastify-type-provider-zod';
+import { z } from 'zod';
+
+import { notFound } from '../lib/errors.js';
+import { dataEnvelope, ok } from '../lib/http.js';
+
+export const categoryRoutes: FastifyPluginAsyncZod = async (app) => {
+  app.patch(
+    '/admin/categories/:id',
+    {
+      schema: {
+        params: z.object({ id: z.uuid() }),
+        // Body WAJIB strict: field tak dikenal → 400 VALIDATION_FAILED (unrecognized_keys).
+        body: z.strictObject({ name: z.string().min(1).max(100).optional() }),
+        response: { 200: dataEnvelope(z.object({ id: z.uuid(), name: z.string() })) },
+      },
+    },
+    async (request) => {
+      const category = await app.prisma.category.findUnique({ where: { id: request.params.id } });
+      if (!category) throw notFound('Kategori tidak ditemukan.');
+      return ok(category); // request.params / request.body sudah bertipe
+    },
+  );
+};
+// app.ts: void app.register(categoryRoutes, { prefix: '/v1' });
+```
+
+Catatan: Fastify memvalidasi `params` → `body` → `querystring` dan berhenti di
+lokasi pertama yang gagal, jadi `details` berisi issue satu lokasi saja. `path`
+tanpa prefix lokasi (sesuai contoh kontrak); bila issue ada di akar, `path` =
+nama lokasi (`body`, `querystring`, `params`). Respons yang tidak cocok dengan
+`schema.response` menjadi `500 INTERNAL_ERROR` (bug server, dicatat di log).
 
 ## Script
 
