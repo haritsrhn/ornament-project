@@ -3,9 +3,9 @@
   "version": "0.0.0",
   "private": true,
   "workspaces": [
-    "frontend",
+    "packages/*",
     "backend",
-    "packages/*"
+    "frontend"
   ],
   "engines": {
     "node": ">=24 <25"
@@ -13,13 +13,16 @@
   "scripts": {
     "dev:backend": "npm run dev --workspace backend",
     "dev:frontend": "npm run dev --workspace frontend",
+    "dev:shared": "npm run dev --workspace packages/shared",
     "build": "npm run build --workspaces --if-present",
-    "build:backend": "npm run build --workspace backend",
-    "build:frontend": "npm run build --workspace frontend",
-    "typecheck": "npm run typecheck --workspaces --if-present",
-    "lint": "npm run lint --workspace backend",
-    "test": "npm run test --workspace backend",
-    "format": "npm run format --workspace backend",
+    "build:shared": "npm run build --workspace packages/shared",
+    "build:backend": "npm run build:shared && npm run build --workspace backend",
+    "build:frontend": "npm run build:shared && npm run build --workspace frontend",
+    "typecheck": "npm run build:shared && npm run typecheck --workspaces --if-present",
+    "lint": "npm run lint --workspace packages/shared --workspace backend",
+    "test": "npm run test --workspace packages/shared --workspace backend",
+    "format": "npm run format --workspace packages/shared --workspace backend",
+    "format:check": "npm run format:check --workspace packages/shared --workspace backend",
     "db:up": "docker compose up -d --wait postgres",
     "db:down": "docker compose down"
   }

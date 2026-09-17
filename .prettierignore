@@ -1,4 +1,4 @@
-# Prettier saat ini hanya dipakai backend; frontend tidak diformat ulang.
+# Prettier saat ini hanya dipakai backend dan packages/shared; frontend tidak diformat ulang.
 frontend/
 backend/docs/
 dist/

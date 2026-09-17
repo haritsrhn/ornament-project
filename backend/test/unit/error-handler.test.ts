@@ -1,10 +1,11 @@
+import type { ErrorEnvelope } from '@ornament/shared';
 import type { FastifyError, FastifyInstance } from 'fastify';
 import type { ZodTypeProvider } from 'fastify-type-provider-zod';
 import { describe, expect, test } from 'vitest';
 import { z } from 'zod';
 
 import { BODY_LIMIT_BYTES } from '../../src/app.js';
-import { AppError, rateLimited, type ErrorEnvelope } from '../../src/lib/errors.js';
+import { AppError, rateLimited } from '../../src/lib/errors.js';
 import { toContractPath, toValidationDetails } from '../../src/plugins/error-handler.js';
 import { REQUEST_ID_HEADER } from '../../src/plugins/logger.js';
 import { buildTestApp } from '../helpers/app.js';

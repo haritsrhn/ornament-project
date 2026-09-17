@@ -4,13 +4,13 @@ Monorepo untuk situs publik dan admin CMS Ornament Sourcing Agent, dikelola
 dengan **npm workspaces**.
 
 ```
-package.json               root workspaces: frontend, backend, packages/*
+package.json               root workspaces: packages/*, backend, frontend (urutan = urutan build)
 package-lock.json          satu lockfile untuk semua workspace
 .nvmrc                     Node 24
-frontend/                  Next.js (App Router) + TypeScript + Tailwind
+packages/shared/           @ornament/shared — skema Zod & tipe kontrak API (lihat README-nya)
 backend/                   Fastify API + TypeScript + Prisma — lihat backend/README.md
+frontend/                  Next.js (App Router) + TypeScript + Tailwind
 docker-compose.yml         PostgreSQL lokal (dev + test) untuk backend
-packages/                  paket bersama (menyusul, mis. @ornament/shared)
 design_handoff_ornament/   Referensi desain (tidak di-track git)
 ```
 
@@ -30,15 +30,27 @@ Script agregat di root:
 ```bash
 npm run dev:frontend   # http://localhost:3000  ·  /admin untuk CMS
 npm run dev:backend    # http://localhost:4000
-npm run build          # build semua workspace
-npm run typecheck      # typecheck semua workspace
-npm run lint           # lint backend
-npm test               # tes backend (unit + integration; butuh db:up)
+npm run dev:shared     # tsc --watch untuk packages/shared (tipe dist/ untuk frontend & editor)
+npm run build          # build semua workspace (shared → backend → frontend)
+npm run build:shared   # build @ornament/shared saja (juga otomatis saat npm install)
+npm run typecheck      # build shared, lalu typecheck semua workspace
+npm run lint           # lint shared + backend
+npm run format         # Prettier shared + backend (format:check untuk cek saja)
+npm test               # tes shared + backend (unit + integration; butuh db:up)
 npm run db:up          # PostgreSQL lokal via Docker (tunggu healthy)
 npm run db:down        # matikan PostgreSQL lokal
 ```
 
-Script per workspace: `npm run <script> --workspace frontend|backend`.
+Script per workspace: `npm run <script> --workspace frontend|backend|packages/shared`.
+
+## Paket bersama
+
+[`packages/shared`](packages/shared/README.md) (`@ornament/shared`) berisi
+skema Zod dan tipe kontrak API yang diimpor backend dan frontend (ADR K6):
+envelope sukses/error, katalog kode error, pagination, health. Hanya kontrak —
+tanpa dependensi server dan tanpa tipe Prisma. Frontend memakainya lewat
+`transpilePackages`; backend dev/tes me-resolve ke `src/` (kondisi
+`@ornament/source`), sedangkan typecheck/build/produksi memakai `dist/`.
 
 ## Frontend
 
@@ -64,15 +76,16 @@ GitHub Actions (`.github/workflows/ci.yml`) berjalan pada setiap pull request
 (ke base branch apa pun) dan push ke `main`. Run lama di ref yang sama
 dibatalkan otomatis. Dua job paralel, Node dari `.nvmrc`:
 
-- **backend** — `npm ci`, generate Prisma Client, typecheck, lint, cek
-  Prettier, tes unit + integrasi terhadap service container `postgres:18-alpine`
-  (database `ornament_test`), lalu build.
-- **frontend** — `npm ci`, typecheck, build Next.js.
+- **backend** (+ shared) — `npm ci`, generate Prisma Client, build shared,
+  typecheck, lint, cek Prettier (shared + backend), tes shared lalu tes unit +
+  integrasi backend terhadap service container `postgres:18-alpine` (database
+  `ornament_test`), lalu build.
+- **frontend** — `npm ci`, build shared, typecheck, build Next.js.
 
 Jalankan langkah yang sama secara lokal sebelum membuka PR:
 
 ```bash
-npm run typecheck && npm run lint && npm run format:check --workspace backend && npm test && npm run build
+npm run typecheck && npm run lint && npm run format:check && npm test && npm run build
 ```
 
 ## Deployment

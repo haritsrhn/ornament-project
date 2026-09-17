@@ -1,12 +1,7 @@
+import type { ErrorCode, ErrorEnvelope, ValidationDetail } from '@ornament/shared';
 import type { FastifyError, FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 
-import {
-  ERROR_STATUS,
-  isAppError,
-  type ErrorCode,
-  type ErrorEnvelope,
-  type ValidationIssueDetail,
-} from '../lib/errors.js';
+import { ERROR_STATUS, isAppError } from '../lib/errors.js';
 
 /** Pemetaan error bawaan Fastify (kode `FST_ERR_*`) ke kode kontrak §1.10. */
 const FASTIFY_CODE_MAP: Record<string, { code: ErrorCode; message: string }> = {
@@ -67,9 +62,9 @@ function splitInstancePath(instancePath: string): string[] {
  * `path` menunjuk field yang ditolak. Path kosong (akar) diisi nama lokasi
  * (`body`/`querystring`/`params`/`headers`) supaya tidak pernah kosong.
  */
-export function toValidationDetails(error: FastifyError): ValidationIssueDetail[] {
+export function toValidationDetails(error: FastifyError): ValidationDetail[] {
   const location = error.validationContext ?? 'body';
-  const details: ValidationIssueDetail[] = [];
+  const details: ValidationDetail[] = [];
 
   for (const issue of error.validation ?? []) {
     const base = splitInstancePath(issue.instancePath);
