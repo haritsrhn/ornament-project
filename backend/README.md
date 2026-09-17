@@ -9,8 +9,15 @@ memvalidasi env saat startup, dan punya middleware inti: format error kontrak,
 validasi request/response dengan Zod, request ID + logging, serta health check.
 Tes unit/integrasi (Vitest) dan CI GitHub Actions sudah berjalan. Skema/tipe
 kontrak API (envelope, katalog kode error, pagination, health) diimpor dari paket
-workspace [`@ornament/shared`](../packages/shared/README.md). Model domain
-(Tahap 2) menyusul.
+workspace [`@ornament/shared`](../packages/shared/README.md).
+
+**Tahap 2 (T2.1–T2.3): skema domain.** `prisma/schema.prisma` memuat seluruh
+model katalog, konten, dan operasional (30 model, 22 enum) sesuai
+[`docs/domain-model.md`](docs/domain-model.md), beserta migrasi awal.
+
+**Tahap 2 (T2.4): seed.** `npm run db:seed` mengisi database dev/tes dengan data
+mockup `frontend/lib/data.ts` yang sudah dipetakan ke model domain — lihat
+[§Seed data mockup](#seed-data-mockup). Modul domain/route (Tahap 4) menyusul.
 
 ## Struktur
 
@@ -28,12 +35,19 @@ src/
   routes/health.ts     GET /v1/health, GET /v1/health/ready
   generated/prisma/    Prisma Client hasil generate (tidak di-commit)
 prisma/
-  schema.prisma        datasource + generator (belum ada model domain)
-  migrations/          migrasi SQL (muncul saat model pertama ditambahkan)
+  schema.prisma        datasource + generator + seluruh model domain (docs/domain-model.md)
+  migrations/          migrasi SQL yang di-commit (sumber kebenaran skema DB)
+  seed.ts              entry `npm run db:seed` (muat .env → pengaman → seed → cetak hitungan)
+  seed/guard.ts        assertSeedAllowed() — tolak production & database di luar pola
+  seed/source-data.ts  salinan data mockup frontend/lib/data.ts
+  seed/transform.ts    pengubah teks mockup → kolom (tanggal, MOQ, stok, slug, …)
+  seed/seed.ts         seedDatabase() — TRUNCATE + isi ulang dalam satu transaksi
 prisma.config.ts       konfigurasi Prisma CLI (lokasi skema, migrasi, DATABASE_URL)
 test/
   unit/                tes tanpa database (env, error, error handler, request ID, health)
-  integration/         tes dengan database tes nyata + global-setup.ts (prisma migrate deploy)
+  integration/         tes dengan database tes nyata + global-setup.ts (prisma migrate deploy);
+                       schema-constraints.test.ts membuktikan CHECK/unik/Restrict berlaku di DB;
+                       seed.test.ts menjalankan seed ke DB tes lalu membersihkannya
   helpers/app.ts       buildTestApp() — app dengan logger mati, ditutup otomatis di akhir tes
   helpers/database.ts  resolveTestDatabaseUrl() + createTestPrisma() — hanya DB `*_test`
 vitest.config.ts       project Vitest `unit` dan `integration`
@@ -84,19 +98,84 @@ ada sebelum skrip itu, jalankan `docker compose down -v && npm run db:up`.
 - Runtime memakai driver adapter `@prisma/adapter-pg` (wajib di Prisma 7).
 - Client di-generate ulang otomatis saat `npm install` (postinstall) dan
   sebelum `build` (prebuild). Setelah mengubah skema: `npm run db:generate`.
+- Preview feature `postgresqlExtensions` aktif agar extension `citext`
+  (email case-insensitive) dan `pg_trgm` (indeks trigram untuk pencarian
+  `ILIKE`) dideklarasikan di `datasource` dan dibuat oleh migrasi.
 
-Alur migrasi:
+### Konvensi skema
+
+Sumber kebenaran model: [`docs/domain-model.md`](docs/domain-model.md).
+Yang berlaku di `schema.prisma`:
+
+| Aspek | Aturan |
+| --- | --- |
+| Nama | Model/field camelCase Inggris (dipakai di kode); tabel, kolom, dan tipe enum di PostgreSQL **snake_case** lewat `@@map`/`@map` — SQL mentah di ADR K8 menulis `publish_at`, dan nama snake_case konsisten memudahkan query manual/psql. Tabel singular (`product`, `article`, `"user"` — dikutip karena kata kunci SQL). |
+| ID & waktu | `String @id @default(uuid()) @db.Uuid`; semua `DateTime` memakai `@db.Timestamptz` (UTC, domain model D1). |
+| Uang & ukuran | `Decimal` eksplisit: `fob_price_usd`/`budget_per_unit_usd` `DECIMAL(10,2)`, `length/width/height_cm` `DECIMAL(7,1)`, `weight_kg` `DECIMAL(7,2)`. Jangan pakai `Float` untuk uang. |
+| JSON | Rich text & blok disimpan `Json` (`product.description`, `article.content`, `artisan.story`, `page_block.config`, `product_revision.snapshot`, `activity_log.metadata`) dan divalidasi Zod di `@ornament/shared` (domain model D7). |
+| Soft delete | `deleted_at` pada `product`, `article`, `page`, `media`; `artisan` memakai `archived_at`; `comment`/`user` memakai status. Query daftar wajib menyaring sendiri. |
+| Unik | `slug` dan `sku` unik **termasuk baris di Trash** (§6.1/§6.2), jadi unik biasa — bukan unik parsial. |
+| Indeks FK | Setiap kolom FK punya indeks; Postgres tidak membuatnya otomatis dan semua aturan hapus (`Restrict`/`SetNull`/`Cascade`) serta hitungan "dipakai di mana" memeriksa sisi anak. |
+
+### Alur migrasi
 
 ```bash
 # dev: ubah prisma/schema.prisma, lalu buat + terapkan migrasi
 npm run db:migrate --workspace backend -- --name <nama-perubahan>
 # staging/production/CI: terapkan migrasi yang sudah di-commit, tanpa membuat baru
 npm run db:migrate:deploy --workspace backend
+# cek apakah DB tertinggal dari folder migrasi
+npx prisma migrate status
 ```
 
-Selama skema belum punya model, `db:migrate` hanya membuat tabel
-`_prisma_migrations` dan tidak menghasilkan folder migrasi; migrasi pertama
-lahir bersama model domain di Tahap 2.
+- `prisma migrate dev` tanpa perubahan harus menjawab *"Already in sync"*. Bila
+  ia menawarkan migrasi baru, ada drift antara skema dan migrasi.
+- Migrasi yang sudah di-commit **tidak diedit lagi**; perbaikan dibuat sebagai
+  migrasi baru (checksum migrasi tersimpan di `_prisma_migrations`).
+
+Reset database lokal (dev saja — **menghapus semua data**):
+
+```bash
+npx prisma migrate reset            # drop schema, terapkan ulang semua migrasi (+ seed bila ada)
+# atau reset total termasuk volume Postgres, dari root repo:
+docker compose down -v && npm run db:up
+```
+
+Database tes tidak perlu direset manual: `test/integration/global-setup.ts`
+menjalankan `prisma migrate deploy` ke `ornament_test` sebelum tes.
+
+### Constraint SQL manual
+
+Sebagian aturan di `docs/domain-model.md` tidak bisa ditulis di Prisma Schema.
+Aturan itu ditambahkan sebagai SQL di blok terakhir
+`prisma/migrations/<ts>_model_domain_awal/migration.sql`, sehingga ikut
+`migrate deploy` dan tetap terlacak `migrate status`. Prisma tidak menganggapnya
+drift karena tidak ada padanannya di `schema.prisma` — tapi **jangan hapus blok
+itu** saat membuat migrasi berikutnya.
+
+| Objek | Aturan | Sumber |
+| --- | --- | --- |
+| `invite_email_active_key` | Unik parsial: satu undangan aktif per email (`WHERE accepted_at IS NULL AND revoked_at IS NULL`) | §3.1 |
+| `product_material_primary_key` | Unik parsial: maksimal satu material primer per produk (`WHERE is_primary`) | §3.5 |
+| `product_low_stock_threshold_check` | `low_stock_threshold >= 0` bila diisi | §3.5 (Q13) |
+| `product_stock_quantity_check` | `stock_quantity >= 0` bila diisi | kontrak §5.6 `ProductInput` |
+| `comment_author_identity_check` | `author_user_id`, `author_email`, atau `anonymized_at` harus terisi | §3.6 |
+| `inquiry_email_present_check` | `email` wajib kecuali sudah dianonimkan | §3.7 |
+| `page_block_global_check` | `page_id IS NULL` ⇔ `visibility = 'GLOBAL'` (blok global) | D10, §3.8 |
+| `nav_item_target_check` | Target sesuai `type`: `PAGE`→`page_id`, `CATEGORY`→`category_id`, `CUSTOM_LINK`→`url`, `ARTICLE_ARCHIVE`→tanpa target | §3.8 |
+| `site_setting_singleton_check` | `id = 1` (singleton bertipe) | D11, §3.8 |
+| `site_setting_low_stock_threshold_check` | `low_stock_threshold >= 0` | §3.8 (Q13) |
+| `slug_redirect_target_check` | Tepat satu dari `product_id`/`article_id`, sesuai `type` | §3.8, §6.10 |
+| `product_sku_seq` | Sequence global untuk saran SKU `ORN-<kode>-<NNNN>`; nomor tidak pernah dipakai ulang | §6.2 |
+
+Aturan lain yang **sengaja tetap di lapisan API** (tidak bisa/tidak layak jadi
+constraint DB): syarat publish produk & artikel, "tepat satu material primer saat
+publish", nesting komentar maksimal 1 tingkat, `stock_quantity` wajib null saat
+status efektif `MADE_TO_ORDER`, domain email `@ornament.id`, pola SKU/slug, dan
+larangan `from_slug` bertabrakan dengan slug aktif entitas lain.
+
+Bukti bahwa constraint ini benar-benar berlaku ada di
+`test/integration/schema-constraints.test.ts`.
 
 ### Env
 
@@ -121,6 +200,65 @@ dicetak). `dev` dan `start` memuat `backend/.env` bila ada
 
 Di `NODE_ENV=production`, `INTERNAL_API_KEY`, `INTERNAL_JOB_TOKEN`, dan
 `REVALIDATE_SECRET` (bila di-set) minimal 32 karakter.
+
+## Seed data mockup
+
+`npm run db:seed` (di `backend/`, atau `npm run db:seed --workspace backend` dari
+root) mengisi database dengan isi `frontend/lib/data.ts` yang sudah dipetakan ke
+model domain sesuai tabel pemetaan [`docs/domain-model.md`](docs/domain-model.md)
+§7: pengguna, kategori (hierarkis), material + kode SKU, tag, pengrajin, produk
+beserta material primer/spesifikasi/checklist QC, kategori artikel, artikel +
+blok isi, komentar, inquiry + balasan, halaman + blok Page Builder, menu,
+pengaturan situs, dan log aktivitas.
+
+```bash
+npm run db:up                    # di root; PostgreSQL harus jalan
+npm run db:migrate --workspace backend
+npm run db:seed --workspace backend
+```
+
+> **Hanya dev/tes.** Seed meng-`TRUNCATE` **seluruh tabel domain** sebelum
+> mengisi ulang. Data yang dibuat manual lewat admin ikut hilang.
+
+**Idempoten.** Karena hapus-lalu-isi dilakukan di dalam satu transaksi, seed
+boleh dijalankan berapa kali pun: jumlah baris tetap sama dan tidak pernah ada
+bentrok kunci unik. Yang berubah antar-jalan hanya UUID dan timestamp, karena
+semua waktu diturunkan relatif terhadap waktu seed.
+
+**Pengaman** (`prisma/seed/guard.ts`), dijalankan sebelum koneksi dibuka:
+
+| Kondisi | Hasil |
+| --- | --- |
+| `NODE_ENV=production` | Batal, exit code 1, tidak ada yang ditulis |
+| Nama database di `DATABASE_URL` tidak memuat `ornament` | Batal, exit code 1 |
+| `DATABASE_URL` kosong/tidak valid | Batal, exit code 1 |
+
+Seed terdaftar di `prisma.config.ts` (`migrations.seed`), jadi ikut
+`prisma migrate reset` dan `prisma migrate dev` pada database yang baru dibuat —
+**tidak** ikut `prisma migrate deploy`, sehingga rilis production tidak pernah
+menjalankan seed.
+
+### Cara data mockup dipetakan
+
+| Mockup | Hasil di database |
+| --- | --- |
+| Tanggal relatif ("3 jam lalu", "Kemarin", "18 mnt") | `now - offset` saat seed dijalankan |
+| Tanggal absolut ("26 Agu 2026", "23 Agu 2026") | Digeser dengan selisih yang sama terhadap "sekarang"-nya mockup (24 Agu 2026), sehingga artikel `Scheduled` tetap terjadwal di masa depan |
+| Periode target kirim inquiry ("Nov 2026") | Tidak digeser; `targetShipDate` = tanggal 1 bulan itu (§6.5) |
+| `status` produk ("In Stock" … "Draft") | Dipecah `publishStatus` + `stockStatus` turunan (§6.3) |
+| `stock` ("84 unit siap kirim") | `stockQuantity`; teks tanpa angka ("Menunggu foto produk") → `stockNote` |
+| `PRODUCT_SPEC` (panel detail satu produk) | Dimensi/lead time/harga FOB hanya untuk produk pertama; dua baris sisanya jadi `ProductSpec` |
+| `QC_POINTS` (global) | Checklist 4 tahap untuk **setiap** produk (D6); `PASSED` untuk produk terbit |
+| `subject` inquiry (teks bebas) | Dihasilkan ulang sesuai §6.5; nomor `INQ-0001…` diurutkan dari yang terlama |
+| `BUILDER_BLOCKS` | Blok beranda; "Footer" jadi blok global (`pageId` null, D10); nama set gambar disimpan di `config.imageNote` |
+
+Yang **tidak** ada sumbernya di mockup, dan karena itu tidak diisi: berkas media
+(tabel `media` kosong, semua `*ImageId` null — produk terbit karenanya belum
+memenuhi syarat publish §6.3 yang berlaku di lapisan API), sesi, undangan,
+revisi produk, galeri & dokumen pengrajin, lampiran inquiry, dan redirect slug.
+Email komentar (wajib per §3.6) dibuat sintetis `@example.com`; kolom
+`passwordHash` diisi penanda yang **bukan** encoding argon2id yang sah, sehingga
+tidak ada akun seed yang bisa dipakai login sampai modul auth (ADR K7) ada.
 
 ## Tes
 
@@ -150,9 +288,14 @@ npm run test --workspace backend -- test/unit/env.test.ts   # satu file
   `ornament`), dan helper menolak nama database yang tidak berakhiran `_test`.
 - Global setup project `integration` menjalankan `prisma migrate deploy` ke DB
   tes (dengan `DATABASE_URL` proses anak di-set ke URL tes). Bila DB tidak
-  terjangkau, tes gagal cepat dengan pesan yang jelas. Selama belum ada
-  migrasi, langkah ini hanya memastikan koneksi.
+  terjangkau, tes gagal cepat dengan pesan yang jelas.
 - Tes integrasi memverifikasi `current_database()` berakhiran `_test`.
+- Tes yang menulis data membuat fixture bersufiks acak dan menghapusnya di
+  `afterAll`, sehingga `ornament_test` kembali kosong setelah `npm test`.
+- Berkas project `integration` dijalankan **berurutan** (`fileParallelism: false`):
+  `seed.test.ts` mengosongkan lalu mengisi ulang seluruh database tes, jadi ia
+  tidak boleh berjalan bersamaan dengan berkas lain. Berkas itu juga
+  membersihkan database lagi setelah selesai.
 
 ### Menulis tes
 
@@ -286,6 +429,7 @@ Jalankan dengan `npm run <script> --workspace backend` dari root, atau
 | `db:generate` | `prisma generate` |
 | `db:migrate` | `prisma migrate dev` (buat + terapkan migrasi, dev) |
 | `db:migrate:deploy` | `prisma migrate deploy` (terapkan migrasi yang ada) |
+| `db:seed` | Isi database dev/tes dengan data mockup (**menghapus isi DB lebih dulu**) |
 | `db:studio` | Prisma Studio |
 
 Di root: `db:up` / `db:down` untuk container PostgreSQL, `test` untuk tes backend.

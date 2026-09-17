@@ -37,6 +37,10 @@ export default defineConfig({
           include: ['test/integration/**/*.test.ts'],
           environment: 'node',
           globalSetup: ['test/integration/global-setup.ts'],
+          // Berkas dijalankan berurutan: `seed.test.ts` mengosongkan dan
+          // mengisi ulang seluruh database tes, jadi ia tidak boleh berjalan
+          // bersamaan dengan berkas lain yang memakai DB yang sama.
+          fileParallelism: false,
           // Koneksi pool per file; timeout lebih longgar untuk I/O database.
           testTimeout: 15_000,
           hookTimeout: 30_000,

@@ -38,6 +38,7 @@ npm run lint           # lint shared + backend
 npm run format         # Prettier shared + backend (format:check untuk cek saja)
 npm test               # tes shared + backend (unit + integration; butuh db:up)
 npm run db:up          # PostgreSQL lokal via Docker (tunggu healthy)
+npm run db:seed --workspace backend   # isi DB dev dengan data mockup (dev/tes saja)
 npm run db:down        # matikan PostgreSQL lokal
 ```
 
