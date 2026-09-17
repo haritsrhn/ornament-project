@@ -4,11 +4,13 @@ API untuk situs publik dan admin CMS. Fastify 5 + TypeScript (ESM, strict),
 berjalan di Node.js 24. Keputusan arsitektur ada di
 [`docs/adr/0001-arsitektur-backend.md`](docs/adr/0001-arsitektur-backend.md).
 
-**Status: fondasi (T1.1–T1.4).** Server terhubung ke PostgreSQL lewat Prisma,
+**Status: fondasi (T1.1–T1.5).** Server terhubung ke PostgreSQL lewat Prisma,
 memvalidasi env saat startup, dan punya middleware inti: format error kontrak,
 validasi request/response dengan Zod, request ID + logging, serta health check.
-Tes unit/integrasi (Vitest) dan CI GitHub Actions sudah berjalan. Paket
-`@ornament/shared` (T1.5) serta model domain (Tahap 2) menyusul.
+Tes unit/integrasi (Vitest) dan CI GitHub Actions sudah berjalan. Skema/tipe
+kontrak API (envelope, katalog kode error, pagination, health) diimpor dari paket
+workspace [`@ornament/shared`](../packages/shared/README.md). Model domain
+(Tahap 2) menyusul.
 
 ## Struktur
 
@@ -17,8 +19,8 @@ src/
   app.ts               buildApp() — merakit instance Fastify tanpa listen (dipakai server & tes)
   server.ts            entry: loadEnv(), cek DB (SELECT 1), listen, graceful shutdown
   config/env.ts        loadEnv() — skema Zod untuk process.env
-  lib/errors.ts        AppError + katalog kode error kontrak §1.10 + helper (notFound(), …)
-  lib/http.ts          envelope sukses: ok(), dataEnvelope() (kontrak §1.4)
+  lib/errors.ts        AppError + ERROR_STATUS (status HTTP per ErrorCode §1.10) + helper (notFound(), …)
+  lib/http.ts          ok() — membungkus data ke envelope sukses (kontrak §1.4)
   plugins/prisma.ts    registerPrisma() — decorate app.prisma + $disconnect saat onClose
   plugins/validation.ts  validator/serializer Zod, locale pesan Indonesia, hanya body JSON
   plugins/error-handler.ts  setErrorHandler + setNotFoundHandler → envelope error kontrak §1.5
@@ -200,7 +202,8 @@ selain `application/json`, gagal validasi, dan error tak terduga — dikirim seb
 }
 ```
 
-- `code` dari katalog kontrak §1.10 (`ErrorCode` di `src/lib/errors.ts`).
+- `code` dari katalog kontrak §1.10 (`ErrorCode` dari `@ornament/shared`;
+  status HTTP default per kode di `ERROR_STATUS`, `src/lib/errors.ts`).
   `details` hanya ada bila relevan.
 - 5xx: stack & `cause` dicatat di log; respons hanya `INTERNAL_ERROR` generik.
 - Di modul, cukup `throw`: `throw notFound()`, `throw conflict(['slug'])`,
@@ -214,11 +217,12 @@ selain `application/json`, gagal validasi, dan error tak terduga — dikirim seb
 ### Menulis rute dengan skema Zod
 
 ```ts
+import { dataEnvelope } from '@ornament/shared';
 import type { FastifyPluginAsyncZod } from 'fastify-type-provider-zod';
 import { z } from 'zod';
 
 import { notFound } from '../lib/errors.js';
-import { dataEnvelope, ok } from '../lib/http.js';
+import { ok } from '../lib/http.js';
 
 export const categoryRoutes: FastifyPluginAsyncZod = async (app) => {
   app.patch(
@@ -247,6 +251,22 @@ tanpa prefix lokasi (sesuai contoh kontrak); bila issue ada di akar, `path` =
 nama lokasi (`body`, `querystring`, `params`). Respons yang tidak cocok dengan
 `schema.response` menjadi `500 INTERNAL_ERROR` (bug server, dicatat di log).
 
+### Skema bersama (`@ornament/shared`)
+
+Skema yang juga dibutuhkan frontend (bentuk request/response, enum, pagination)
+ditulis di `packages/shared/src/`, bukan di `backend/src/` (ADR K6); contoh di
+atas memakai `z.object` inline hanya untuk ringkas. Yang tetap di backend: logika
+server (`AppError`, `ERROR_STATUS`, `ok()`, error handler) dan tipe Prisma.
+
+- `npm run dev` (tsx) dan Vitest me-resolve paket ke `packages/shared/src`
+  lewat kondisi export `@ornament/source`: perubahan skema langsung terpakai.
+- `typecheck`, `lint`, `build`, dan `start` memakai `packages/shared/dist`
+  (dibangun otomatis saat `npm install`; `npm run build:shared` atau
+  `npm run dev:shared` di root setelah mengubah skema bersama).
+- `build` backend tidak membangun shared; dari root, `npm run build:backend`
+  atau `npm run build` membangun shared lebih dulu. Artefak deploy butuh
+  `packages/shared/dist` dan `node_modules/@ornament/shared`.
+
 ## Script
 
 Jalankan dengan `npm run <script> --workspace backend` dari root, atau
@@ -254,10 +274,10 @@ Jalankan dengan `npm run <script> --workspace backend` dari root, atau
 
 | Script | Fungsi |
 | --- | --- |
-| `dev` | Server dengan reload otomatis (`tsx watch`) |
+| `dev` | Server dengan reload otomatis (`tsx watch`, shared dari `src/`) |
 | `build` | `prisma generate` lalu kompilasi ke `dist/` |
 | `start` | Jalankan hasil build (`node dist/server.js`) |
-| `typecheck` | `tsc --noEmit` |
+| `typecheck` | `tsc --noEmit` (butuh `packages/shared/dist`) |
 | `lint` | ESLint |
 | `format` / `format:check` | Prettier (tulis / cek saja) |
 | `test` | Semua tes sekali jalan (unit + integration) |
@@ -273,8 +293,9 @@ Di root: `db:up` / `db:down` untuk container PostgreSQL, `test` untuk tes backen
 ## CI
 
 `.github/workflows/ci.yml` (lihat README root) menjalankan untuk backend:
-`npm ci` → `db:generate` → `typecheck` → `lint` → `format:check` → `test`
-(dengan service container `postgres:18-alpine` dan `TEST_DATABASE_URL`) → `build`.
+`npm ci` → `db:generate` → `build:shared` → `typecheck` (shared + backend) →
+`lint` → `format:check` → `test` (shared, lalu backend dengan service container
+`postgres:18-alpine` dan `TEST_DATABASE_URL`) → `build`.
 
 ## Dokumentasi
 

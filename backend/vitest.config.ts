@@ -7,8 +7,18 @@ import { defineConfig } from 'vitest/config';
  *   lokal). Global setup memastikan DB terjangkau dan menerapkan migrasi.
  *
  * `npm test` menjalankan keduanya; `--project unit|integration` untuk salah satu.
+ *
+ * `@ornament/source`: `@ornament/shared` di-resolve ke `src/*.ts` (bukan `dist/`),
+ * sama seperti `npm run dev` (tsx), sehingga perubahan skema bersama langsung
+ * teruji tanpa build ulang. Sisanya = kondisi server bawaan Vite
+ * (`defaultServerConditions`), karena opsi ini menggantikan default.
  */
 export default defineConfig({
+  ssr: {
+    resolve: {
+      conditions: ['@ornament/source', 'module', 'node', 'development|production'],
+    },
+  },
   test: {
     restoreMocks: true,
     projects: [

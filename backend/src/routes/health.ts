@@ -1,13 +1,11 @@
+import { healthResponseSchema } from '@ornament/shared';
 import type { FastifyPluginAsyncZod } from 'fastify-type-provider-zod';
-import { z } from 'zod';
 
 import { serviceUnavailable } from '../lib/errors.js';
-import { dataEnvelope, ok } from '../lib/http.js';
+import { ok } from '../lib/http.js';
 
 /** Batas waktu `SELECT 1` readiness; LB tidak boleh menunggu lama. */
 export const READINESS_TIMEOUT_MS = 2000;
-
-const healthResponse = dataEnvelope(z.object({ status: z.literal('ok') }));
 
 function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
   let timer: NodeJS.Timeout | undefined;
@@ -27,11 +25,13 @@ function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
  *   dibangun tanpa DB → `503 SERVICE_UNAVAILABLE`.
  */
 export const healthRoutes: FastifyPluginAsyncZod = (app) => {
-  app.get('/health', { schema: { response: { 200: healthResponse } }, logLevel: 'warn' }, () =>
-    ok({ status: 'ok' as const }),
+  app.get(
+    '/health',
+    { schema: { response: { 200: healthResponseSchema } }, logLevel: 'warn' },
+    () => ok({ status: 'ok' as const }),
   );
 
-  app.get('/health/ready', { schema: { response: { 200: healthResponse } } }, async () => {
+  app.get('/health/ready', { schema: { response: { 200: healthResponseSchema } } }, async () => {
     if (!app.hasDecorator('prisma')) {
       throw serviceUnavailable('Database tidak dikonfigurasi.');
     }

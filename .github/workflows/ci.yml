@@ -16,7 +16,7 @@ permissions:
 
 jobs:
   backend:
-    name: Backend (typecheck, lint, format, test, build)
+    name: Backend + shared (typecheck, lint, format, test, build)
     runs-on: ubuntu-latest
     timeout-minutes: 15
 
@@ -56,17 +56,22 @@ jobs:
       - name: Generate Prisma Client
         run: npm run db:generate --workspace backend
 
+      # Backend (typecheck, lint, build) membaca tipe `@ornament/shared` dari `dist/`.
+      - name: Build shared
+        run: npm run build:shared
+
       - name: Typecheck
-        run: npm run typecheck --workspace backend
+        run: npm run typecheck --workspace packages/shared --workspace backend
 
       - name: Lint
-        run: npm run lint --workspace backend
+        run: npm run lint
 
       - name: Format check
-        run: npm run format:check --workspace backend
+        run: npm run format:check
 
-      - name: Test (unit + integration)
-        run: npm run test --workspace backend
+      # Shared (skema) lalu backend (unit + integration).
+      - name: Test
+        run: npm test
 
       - name: Build
         run: npm run build --workspace backend
@@ -86,6 +91,10 @@ jobs:
 
       - name: Install dependencies
         run: npm ci
+
+      # Next (`transpilePackages`) dan tsc frontend memakai `dist/` `@ornament/shared`.
+      - name: Build shared
+        run: npm run build:shared
 
       - name: Typecheck
         run: npm run typecheck --workspace frontend

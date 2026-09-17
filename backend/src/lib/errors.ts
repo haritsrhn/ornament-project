@@ -6,7 +6,14 @@
  * `{ error: { code, message, details, requestId } }`.
  */
 
-/** Katalog kode error stabil — persis kontrak §1.10. Klien bercabang berdasarkan kode ini. */
+import type { ErrorCode, ValidationDetail } from '@ornament/shared';
+
+/**
+ * Status HTTP default per kode katalog §1.10. Daftar kode (`ErrorCode`) dan
+ * bentuk envelope milik kontrak di `@ornament/shared`; status HTTP adalah
+ * urusan server, jadi tetap di sini. `satisfies` memastikan setiap kode punya
+ * status dan tidak ada kode di luar katalog.
+ */
 export const ERROR_STATUS = {
   BAD_REQUEST: 400,
   VALIDATION_FAILED: 400,
@@ -33,29 +40,7 @@ export const ERROR_STATUS = {
   INTERNAL_ERROR: 500,
   UPSTREAM_FAILED: 502,
   SERVICE_UNAVAILABLE: 503,
-} as const;
-
-export type ErrorCode = keyof typeof ERROR_STATUS;
-
-/** Satu entri `details[]` untuk `VALIDATION_FAILED` (kontrak §1.5). */
-export interface ValidationIssueDetail {
-  /** Notasi titik/indeks, mis. `materials[0].materialId`. */
-  path: string;
-  /** Kode issue Zod (`too_small`, `invalid_type`, `unrecognized_keys`, …) atau kode kustom. */
-  code: string;
-  message: string;
-}
-
-export interface ErrorBody {
-  code: ErrorCode;
-  message: string;
-  details?: unknown;
-  requestId: string;
-}
-
-export interface ErrorEnvelope {
-  error: ErrorBody;
-}
+} as const satisfies Record<ErrorCode, number>;
 
 export interface AppErrorOptions {
   details?: unknown;
@@ -97,7 +82,7 @@ export const badRequest = (message = 'Permintaan tidak valid.', details?: unknow
   new AppError('BAD_REQUEST', message, { details });
 
 export const validationFailed = (
-  details: ValidationIssueDetail[],
+  details: ValidationDetail[],
   message = 'Beberapa field tidak valid.',
 ) => new AppError('VALIDATION_FAILED', message, { details });
 
