@@ -1,10 +1,16 @@
 import { buildApp } from './app.js';
+import { EnvValidationError, loadEnv, type Env } from './config/env.js';
 
-// Validasi env formal menyusul (T1.2); untuk sekarang cukup default sederhana.
-const host = process.env.HOST ?? '0.0.0.0';
-const port = Number(process.env.PORT ?? 4000);
+let config: Env;
+try {
+  config = loadEnv();
+} catch (err) {
+  // Logger Fastify belum ada; pesan hanya berisi nama variabel, bukan nilainya.
+  console.error(err instanceof EnvValidationError ? err.message : err);
+  process.exit(1);
+}
 
-const app = buildApp();
+const app = buildApp({ config });
 
 let shuttingDown = false;
 
@@ -26,8 +32,18 @@ for (const signal of ['SIGINT', 'SIGTERM'] as const) {
 }
 
 try {
-  await app.listen({ host, port });
+  // Gagal cepat bila database tidak terjangkau, daripada error di request pertama.
+  try {
+    await app.prisma.$queryRaw`SELECT 1`;
+  } catch (err) {
+    throw new Error('database tidak dapat dihubungi (periksa DATABASE_URL dan `npm run db:up`)', {
+      cause: err,
+    });
+  }
+  app.log.info('koneksi database OK');
+  await app.listen({ host: config.HOST, port: config.PORT });
 } catch (err) {
-  app.log.error(err);
+  app.log.error(err, 'gagal memulai server');
+  await app.close().catch(() => undefined);
   process.exit(1);
 }

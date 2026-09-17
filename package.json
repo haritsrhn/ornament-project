@@ -18,6 +18,8 @@
     "build:frontend": "npm run build --workspace frontend",
     "typecheck": "npm run typecheck --workspaces --if-present",
     "lint": "npm run lint --workspace backend",
-    "format": "npm run format --workspace backend"
+    "format": "npm run format --workspace backend",
+    "db:up": "docker compose up -d --wait postgres",
+    "db:down": "docker compose down"
   }
 }

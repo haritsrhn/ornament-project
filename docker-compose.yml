@@ -1,0 +1,36 @@
+# PostgreSQL lokal untuk pengembangan dan tes backend.
+# Kredensial di bawah hanya untuk mesin dev — bukan rahasia, jangan dipakai di production.
+#
+#   npm run db:up     nyalakan (menunggu sampai healthy)
+#   npm run db:down   matikan (data tetap di volume `ornament-pgdata`)
+#
+# Dua database dalam satu instance:
+#   ornament       dev  (POSTGRES_DB)
+#   ornament_test  tes  (dibuat oleh backend/docker/postgres-init/01-create-test-db.sql)
+# Skrip init hanya dijalankan saat volume masih kosong. Bila volume lama sudah
+# ada tanpa `ornament_test`, jalankan `docker compose down -v` lalu `db:up` lagi.
+name: ornament
+
+services:
+  postgres:
+    image: postgres:18-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ornament
+      POSTGRES_PASSWORD: ornament
+      POSTGRES_DB: ornament
+    ports:
+      - '127.0.0.1:5432:5432'
+    volumes:
+      # Postgres 18 menyimpan data di subdirektori berversi di bawah /var/lib/postgresql.
+      - ornament-pgdata:/var/lib/postgresql
+      - ./backend/docker/postgres-init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U ornament -d ornament']
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+volumes:
+  ornament-pgdata:

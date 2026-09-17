@@ -28,7 +28,8 @@ di request, `T|null` = selalu ada di respons tetapi bisa `null`, `T[]` = array,
 | `/v1/admin/auth/*` | Browser admin (`credentials: "include"`) | Sebagian tanpa sesi (login, undangan) | CORS allowlist `ADMIN_ORIGIN`. |
 | `/v1/admin/*` | Browser admin | Cookie `__Host-osa_session` wajib | CORS allowlist `ADMIN_ORIGIN`, cek `Origin` untuk non-GET. |
 | `/v1/internal/*` | Cron eksternal / operator | `Authorization: Bearer <INTERNAL_JOB_TOKEN>` | Tidak masuk CORS. Lihat §5.17. |
-| `/v1/health` | Load balancer | — | `200 {"status":"ok"}` |
+| `/v1/health` | Load balancer (liveness) | — | `200 {"data":{"status":"ok"}}`, tanpa cek DB. |
+| `/v1/health/ready` | Load balancer (readiness) | — | `200 {"data":{"status":"ok"}}` bila `SELECT 1` ke DB berhasil (timeout 2 dtk); selain itu `503 SERVICE_UNAVAILABLE`. |
 
 - **Versi di path** (`/v1`). Perubahan yang *breaking* (hapus/ganti nama field,
   ubah arti enum, ubah bentuk envelope) → `/v2` untuk rute terdampak. Menambah
@@ -99,7 +100,7 @@ sama **kecuali** filter tab itu sendiri (mis. `{ "all": 57, "PUBLISHED": 41, "DR
     "message": "Beberapa field tidak valid.",
     "details": [
       { "path": "moqQuantity", "code": "too_small", "message": "Minimal 1." },
-      { "path": "materials[0].materialId", "code": "invalid_string", "message": "Harus UUID." }
+      { "path": "materials[0].materialId", "code": "invalid_format", "message": "Harus UUID." }
     ],
     "requestId": "01J8Y9K7Q2N5..."
   }
@@ -110,7 +111,7 @@ sama **kecuali** filter tab itu sendiri (mis. `{ "all": 57, "PUBLISHED": 41, "DR
   `message`. `message` bahasa Indonesia, untuk ditampilkan/log.
 - `details`: opsional. Untuk validasi = daftar `{ path, code, message }`; `path` pakai
   notasi titik/indeks, `code` = kode issue Zod (`too_small`, `invalid_type`,
-  `invalid_enum_value`, `custom`, …) atau kode kustom (`email_domain`, `slug_taken`).
+  `invalid_format`, `invalid_value`, `unrecognized_keys`, `custom`, …; kode Zod 4) atau kode kustom (`email_domain`, `slug_taken`).
   Untuk error domain = objek/array spesifik (didokumentasikan per error).
 - Pesan validasi server dan form klien memakai skema Zod yang sama (ADR K6).
 
@@ -572,7 +573,7 @@ Validasi gagal:
     "code": "VALIDATION_FAILED",
     "message": "Beberapa field tidak valid.",
     "details": [
-      { "path": "email", "code": "invalid_string", "message": "Email tidak valid." },
+      { "path": "email", "code": "invalid_format", "message": "Email tidak valid." },
       { "path": "volumeQuantity", "code": "too_small", "message": "Volume minimal 1 pcs." }
     ],
     "requestId": "01J8Z3N4…"

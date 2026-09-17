@@ -1,0 +1,16 @@
+// Skema Prisma — API Ornament.
+// URL koneksi TIDAK ditulis di sini (Prisma 7): CLI membacanya dari
+// prisma.config.ts, runtime memakai driver adapter @prisma/adapter-pg.
+// Model domain ditambahkan mulai Tahap 2 (lihat docs/domain-model.md).
+
+generator client {
+  provider               = "prisma-client"
+  output                 = "../src/generated/prisma"
+  moduleFormat           = "esm"
+  importFileExtension    = "js"
+  generatedFileExtension = "ts"
+}
+
+datasource db {
+  provider = "postgresql"
+}
