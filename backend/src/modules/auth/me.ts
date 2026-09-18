@@ -8,7 +8,11 @@ import { permissionsForRole, type Me, type MediaRef } from '@ornament/shared';
 
 import type { SessionUser } from './session.js';
 
-function toMediaRef(
+/**
+ * `MediaRef` untuk avatar. Dipakai `Me` dan `AdminUser` (kontrak §5.13) supaya
+ * keduanya membentuk URL dengan aturan yang sama.
+ */
+export function toMediaRef(
   avatar: NonNullable<SessionUser['avatar']>,
   publicBaseUrl: string | undefined,
 ): MediaRef {

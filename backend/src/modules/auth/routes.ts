@@ -1,14 +1,21 @@
 /**
  * Endpoint auth admin — kontrak §2.2:
  * `POST /v1/admin/auth/login`, `POST /v1/admin/auth/logout`,
- * `GET /v1/admin/auth/me`.
+ * `GET /v1/admin/auth/me`, `POST /v1/admin/auth/password`,
+ * `GET /v1/admin/auth/invites/:token`, `POST /v1/admin/auth/invites/accept`.
  *
- * Ganti kata sandi dan undangan (§2.2 baris berikutnya) belum dibangun di PR
- * ini; keduanya sudah punya fondasinya (`revokeAllSessionsForUser`,
- * `hashPassword`) dan menyusul bersama modul pengguna (#16).
+ * Empat rute pertama menyangkut sesi pemanggil sendiri, dua terakhir adalah
+ * pintu masuk undangan **tanpa sesi** (pembuatan undangan ada di
+ * `modules/invites/routes.ts`). Setiap rute menyatakan aksesnya lewat
+ * `config.adminAccess`; lihat `guard.ts`.
  */
 
 import {
+  acceptInviteBodySchema,
+  acceptInviteResponseSchema,
+  changePasswordBodySchema,
+  invitePreviewResponseSchema,
+  inviteTokenParamsSchema,
   loginBodySchema,
   loginResponseSchema,
   meResponseSchema,
@@ -17,7 +24,7 @@ import {
 } from '@ornament/shared';
 import type { FastifyPluginAsyncZod } from 'fastify-type-provider-zod';
 
-import { AppError, rateLimited } from '../../lib/errors.js';
+import { AppError, conflict, notFound, rateLimited } from '../../lib/errors.js';
 import { ok } from '../../lib/http.js';
 import {
   hashPassword,
@@ -25,11 +32,13 @@ import {
   verifyAgainstDummyHash,
   verifyPassword,
 } from '../../lib/password.js';
+import { adminRateLimit, invitePublicRateLimit, rateLimitConfig } from '../../lib/rate-limit.js';
+import { findUsableInvite } from '../invites/service.js';
 import { clearSessionCookie, readSessionCookie, setSessionCookie } from './cookie.js';
-import { currentSession } from './guard.js';
-import { LoginThrottle } from './login-throttle.js';
+import { adminPublic, adminSession, currentSession } from './guard.js';
+import { LoginThrottle, PasswordChangeThrottle } from './login-throttle.js';
 import { toMe } from './me.js';
-import { createSession, deleteSessionByToken } from './session.js';
+import { createSession, deleteSessionByToken, revokeAllSessionsForUser } from './session.js';
 
 /**
  * Satu pesan untuk **semua** sebab kegagalan login (#14): email tidak
@@ -40,32 +49,28 @@ const INVALID_CREDENTIALS_MESSAGE = 'Email atau kata sandi salah.';
 
 const invalidCredentials = () => new AppError('INVALID_CREDENTIALS', INVALID_CREDENTIALS_MESSAGE);
 
+/**
+ * Satu respons untuk semua sebab undangan tidak bisa dipakai: token salah,
+ * kedaluwarsa, dicabut, atau sudah diterima (kontrak §2.2). Endpoint ini tanpa
+ * sesi, jadi pesannya tidak boleh membocorkan apakah sebuah undangan pernah ada.
+ */
+const inviteNotFound = () => notFound('Undangan tidak ditemukan atau sudah tidak berlaku.');
+
 /** Batas per IP untuk login (kontrak §2.3): 20 percobaan / 15 menit. */
 export const LOGIN_IP_LIMIT = 20;
 export const LOGIN_IP_WINDOW = '15 minutes';
-
-/** Batas longgar untuk `logout`/`me`: jaring pengaman, bukan anti-brute-force. */
-const ADMIN_IP_LIMIT = 600;
-const ADMIN_IP_WINDOW = '1 minute';
 
 export interface AuthRoutesOptions {
   /** Basis URL publik R2 untuk `Me.avatar.url` (ADR K3); belum di-set di fase ini. */
   mediaPublicUrl?: string | undefined;
   /** Injeksi untuk tes; default satu instance per registrasi plugin. */
   loginThrottle?: LoginThrottle;
+  passwordThrottle?: PasswordChangeThrottle;
 }
-
-/**
- * `errorResponseBuilder` @fastify/rate-limit **melempar** apa pun yang
- * dikembalikan fungsi ini, jadi mengembalikan `AppError` membuat 429-nya
- * melewati error handler kami dan keluar sebagai envelope kontrak §1.5
- * (`RATE_LIMITED` + `details.retryAfterSeconds` + header `Retry-After`).
- */
-const rateLimitErrorResponse = (_request: unknown, context: { ttl: number }) =>
-  rateLimited(Math.max(1, Math.ceil(context.ttl / 1000)));
 
 export const authRoutes: FastifyPluginAsyncZod<AuthRoutesOptions> = (app, options) => {
   const throttle = options.loginThrottle ?? new LoginThrottle();
+  const passwordThrottle = options.passwordThrottle ?? new PasswordChangeThrottle();
   const mediaPublicUrl = options.mediaPublicUrl;
 
   app.post(
@@ -73,11 +78,8 @@ export const authRoutes: FastifyPluginAsyncZod<AuthRoutesOptions> = (app, option
     {
       schema: { body: loginBodySchema, response: { 200: loginResponseSchema } },
       config: {
-        rateLimit: {
-          max: LOGIN_IP_LIMIT,
-          timeWindow: LOGIN_IP_WINDOW,
-          errorResponseBuilder: rateLimitErrorResponse,
-        },
+        adminAccess: adminPublic('login: justru rute yang membuat sesi'),
+        ...rateLimitConfig(LOGIN_IP_LIMIT, LOGIN_IP_WINDOW),
       },
     },
     async (request, reply) => {
@@ -178,16 +180,13 @@ export const authRoutes: FastifyPluginAsyncZod<AuthRoutesOptions> = (app, option
     '/admin/auth/logout',
     {
       config: {
-        rateLimit: {
-          max: ADMIN_IP_LIMIT,
-          timeWindow: ADMIN_IP_WINDOW,
-          errorResponseBuilder: rateLimitErrorResponse,
-        },
+        adminAccess: adminPublic('logout idempoten: tanpa sesi valid pun menjawab 204'),
+        ...adminRateLimit(),
       },
     },
     async (request, reply) => {
       // Idempoten (kontrak §2.2): tanpa sesi valid tetap 204, dan cookie
-      // tetap dihapus. Tidak memakai `requireSession` supaya tidak pernah 401.
+      // tetap dihapus. Tidak memakai guard sesi supaya tidak pernah 401.
       const token = readSessionCookie(request);
       if (token !== undefined) {
         const deleted = await deleteSessionByToken(app.prisma, token);
@@ -201,15 +200,8 @@ export const authRoutes: FastifyPluginAsyncZod<AuthRoutesOptions> = (app, option
   app.get(
     '/admin/auth/me',
     {
-      preHandler: app.requireSession,
       schema: { response: { 200: meResponseSchema } },
-      config: {
-        rateLimit: {
-          max: ADMIN_IP_LIMIT,
-          timeWindow: ADMIN_IP_WINDOW,
-          errorResponseBuilder: rateLimitErrorResponse,
-        },
-      },
+      config: { adminAccess: adminSession(), ...adminRateLimit() },
     },
     (request) => {
       const { user } = currentSession(request);
@@ -217,8 +209,157 @@ export const authRoutes: FastifyPluginAsyncZod<AuthRoutesOptions> = (app, option
     },
   );
 
+  app.post(
+    '/admin/auth/password',
+    {
+      schema: { body: changePasswordBodySchema },
+      config: { adminAccess: adminSession(), ...adminRateLimit() },
+    },
+    async (request, reply) => {
+      const { session, user } = currentSession(request);
+      const { currentPassword, newPassword } = request.body;
+
+      // Batas per **user** (kontrak §2.3: 5 / 15 menit); batas per IP sudah
+      // ditangani `adminRateLimit()`.
+      const lockedFor = passwordThrottle.retryAfterSeconds(user.id);
+      if (lockedFor > 0) {
+        request.log.info({ code: 'RATE_LIMITED', scope: 'password', userId: user.id }, 'terkunci');
+        throw rateLimited(lockedFor);
+      }
+      passwordThrottle.record(user.id);
+
+      const row = await app.prisma.user.findUniqueOrThrow({
+        where: { id: user.id },
+        select: { passwordHash: true },
+      });
+      if (!(await verifyPassword(row.passwordHash, currentPassword))) {
+        request.log.info({ code: 'INVALID_CREDENTIALS', userId: user.id }, 'sandi lama salah');
+        // Kode yang sama dengan login gagal (kontrak §2.2), bukan
+        // `UNAUTHENTICATED`, supaya admin tidak ikut logout di klien.
+        throw new AppError('INVALID_CREDENTIALS', 'Kata sandi saat ini salah.');
+      }
+
+      const passwordHash = await hashPassword(newPassword);
+      await app.prisma.user.update({
+        where: { id: user.id },
+        data: { passwordHash },
+        select: { id: true },
+      });
+
+      // ADR K7: ganti sandi mencabut semua sesi **lain**; sesi pemanggil tetap
+      // hidup supaya ia tidak terlempar keluar dari halaman yang sedang dibuka.
+      const revoked = await revokeAllSessionsForUser(app.prisma, user.id, {
+        exceptSessionId: session.id,
+      });
+      request.log.info({ userId: user.id, revokedSessions: revoked }, 'kata sandi diganti');
+
+      return reply.code(204).send();
+    },
+  );
+
+  // ── Undangan tanpa sesi (kontrak §2.2) ─────────────────────────────────────
+
+  app.get(
+    '/admin/auth/invites/:token',
+    {
+      schema: {
+        params: inviteTokenParamsSchema,
+        response: { 200: invitePreviewResponseSchema },
+      },
+      config: {
+        adminAccess: adminPublic('pratinjau undangan: penerima belum punya akun'),
+        ...invitePublicRateLimit(),
+      },
+    },
+    async (request) => {
+      const invite = await findUsableInvite(app.prisma, request.params.token);
+      if (invite === null) throw inviteNotFound();
+      return ok({
+        email: invite.email,
+        role: invite.role,
+        expiresAt: invite.expiresAt.toISOString(),
+        invitedBy: { name: invite.invitedBy.name },
+      });
+    },
+  );
+
+  app.post(
+    '/admin/auth/invites/accept',
+    {
+      schema: { body: acceptInviteBodySchema, response: { 201: acceptInviteResponseSchema } },
+      config: {
+        adminAccess: adminPublic('terima undangan: justru rute yang membuat akun'),
+        ...invitePublicRateLimit(),
+      },
+    },
+    async (request, reply) => {
+      const { token, name, password } = request.body;
+      const now = new Date();
+
+      const invite = await findUsableInvite(app.prisma, token, now);
+      if (invite === null) throw inviteNotFound();
+
+      // Hash dulu (argon2id ~85 ms) supaya transaksi di bawah sesingkat mungkin.
+      const passwordHash = await hashPassword(password);
+
+      const created = await app.prisma.$transaction(async (tx) => {
+        // Sekali pakai: `updateMany` dengan syarat "belum diterima, belum
+        // dicabut, belum kedaluwarsa" mengunci baris undangan. Dua request
+        // bersamaan dengan token yang sama → hanya satu yang mendapat
+        // `count === 1`.
+        const claimed = await tx.invite.updateMany({
+          where: { id: invite.id, acceptedAt: null, revokedAt: null, expiresAt: { gt: now } },
+          data: { acceptedAt: now },
+        });
+        if (claimed.count === 0) throw inviteNotFound();
+
+        const existing = await tx.user.findUnique({
+          where: { email: invite.email },
+          select: { id: true },
+        });
+        if (existing !== null) {
+          // Kontrak §2.2: email sudah menjadi User → 409 CONFLICT. Transaksi
+          // di-rollback, jadi undangan tidak ikut tertandai diterima.
+          throw conflict(['email'], 'Email ini sudah menjadi pengguna.');
+        }
+
+        return tx.user.create({
+          data: {
+            email: invite.email,
+            name,
+            passwordHash,
+            role: invite.role,
+            status: 'ACTIVE',
+            lastActiveAt: now,
+          },
+          select: { id: true, email: true, name: true, role: true, status: true },
+        });
+      });
+
+      // Sesi 12 jam (kontrak §2.2: penerimaan undangan langsung login, tanpa
+      // opsi "Ingat saya").
+      const session = await createSession(app.prisma, {
+        userId: created.id,
+        rememberMe: false,
+        userAgent: request.headers['user-agent'],
+        ip: request.ip,
+      });
+      setSessionCookie(reply, session.token, session.maxAgeSeconds);
+
+      request.log.info(
+        { userId: created.id, inviteId: invite.id, sessionId: session.sessionId },
+        'undangan diterima',
+      );
+      return reply.code(201).send(
+        ok({
+          user: toMe({ ...created, lastActiveAt: now, avatar: null }, mediaPublicUrl),
+        }),
+      );
+    },
+  );
+
   return Promise.resolve();
 };
 
-/** Peran yang dianggap "boleh masuk admin" — fondasi `requireRole` untuk #15. */
+/** Peran yang dianggap "boleh masuk admin". */
 export const ADMIN_ROLES: readonly UserRole[] = ['ADMINISTRATOR', 'EDITOR', 'CONTRIBUTOR'];
