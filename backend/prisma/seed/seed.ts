@@ -23,15 +23,21 @@
  *   kosong dan semua `*ImageId` null. Akibatnya produk berstatus PUBLISHED di
  *   sini belum memenuhi syarat publish §6.3 (`primaryImageId` wajib) — syarat
  *   itu berlaku di lapisan API, bukan constraint DB.
- * - **Kata sandi**: belum ada dependensi argon2id (ADR K7), dan T2.4 tidak
- *   menambah dependensi. `passwordHash` diisi penanda yang secara sengaja bukan
- *   encoding argon2 yang sah, sehingga verifikasi apa pun pasti gagal → akun
- *   seed tidak bisa dipakai login.
+ * - **Kata sandi**: mockup tidak memuat kata sandi, jadi semua akun seed
+ *   memakai **satu** kata sandi dev yang sama, di-hash argon2id (ADR K7,
+ *   `src/lib/password.ts`). Nilainya dari `SEED_ADMIN_PASSWORD`, atau
+ *   `DEV_ONLY_PASSWORD` bila env itu tidak di-set — dan entry seed mencetak
+ *   kata sandi yang dipakai ke console supaya tidak ada yang menebak. Ini aman
+ *   karena seed hanya boleh jalan di dev/tes (`guard.ts`), tetapi tetap:
+ *   **jangan pakai kata sandi ini di luar mesin lokal.**
  * - Sesi, undangan, revisi produk, galeri, dokumen pengrajin, lampiran inquiry,
  *   dan redirect slug tidak punya data mockup dan tidak diisi.
  */
 
+import { PASSWORD_MIN_LENGTH } from '@ornament/shared';
+
 import type { Prisma, PrismaClient } from '../../src/generated/prisma/client.js';
+import { hashPassword } from '../../src/lib/password.js';
 
 import {
   ACTIVITY,
@@ -71,10 +77,18 @@ import {
 } from './transform.js';
 
 /**
- * Bukan hash argon2id yang sah (ADR K7): tidak ada akun seed yang bisa login.
- * Diganti hash sungguhan saat modul auth dibangun (Tahap 3).
+ * Kata sandi dev bawaan untuk semua akun seed. Sengaja dibuat terbaca sebagai
+ * "hanya untuk lokal", bukan seperti rahasia production, dan dicetak ke console
+ * saat seed berjalan. `SEED_ADMIN_PASSWORD` menimpanya bila di-set.
  */
-export const SEED_PASSWORD_HASH = 'seed-only$no-login$bukan-hash-argon2id-yang-sah';
+export const DEFAULT_SEED_PASSWORD = 'DEV_ONLY_PASSWORD';
+
+/** Kata sandi yang dipakai seed: env bila ada (dan cukup panjang), selain itu default dev. */
+export function resolveSeedPassword(env: NodeJS.ProcessEnv = process.env): string {
+  const fromEnv = env.SEED_ADMIN_PASSWORD;
+  if (fromEnv !== undefined && fromEnv.length >= PASSWORD_MIN_LENGTH) return fromEnv;
+  return DEFAULT_SEED_PASSWORD;
+}
 
 const HOUR = 60 * 60 * 1000;
 const DAY = 24 * HOUR;
@@ -321,6 +335,11 @@ export interface SeedCounts {
 export interface SeedOptions {
   /** Waktu acuan; semua timestamp diturunkan dari sini. Default: sekarang. */
   now?: Date;
+  /**
+   * Kata sandi untuk semua akun seed. Default `resolveSeedPassword()`.
+   * Tes memakai nilainya sendiri agar tidak bergantung pada env mesin.
+   */
+  password?: string;
 }
 
 /**
@@ -349,6 +368,11 @@ export async function seedDatabase(
   options: SeedOptions = {},
 ): Promise<SeedCounts> {
   const now = options.now ?? new Date();
+  // Satu hash dipakai ulang untuk semua akun seed: argon2id dengan parameter
+  // 2026 butuh ~85 ms per hash, dan seed tidak mengajari apa pun dengan
+  // menghitungnya lima kali. Salt-nya acak, jadi hash-nya tetap unik per jalan
+  // seed — yang identik hanyalah antar-akun di dalam satu jalan.
+  const passwordHash = await hashPassword(options.password ?? resolveSeedPassword());
 
   return prisma.$transaction(
     async (tx) => {
@@ -361,7 +385,7 @@ export async function seedDatabase(
           data: {
             email: source.email,
             name: source.name,
-            passwordHash: SEED_PASSWORD_HASH,
+            passwordHash,
             role: must(USER_ROLE[source.role], `peran "${source.role}"`),
             status: 'ACTIVE',
             lastActiveAt: parseRelativeWhen(source.last, now),

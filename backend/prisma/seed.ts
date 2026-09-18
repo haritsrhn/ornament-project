@@ -11,7 +11,7 @@ import path from 'node:path';
 
 import { createPrismaClient } from '../src/plugins/prisma.js';
 import { assertSeedAllowed, SeedNotAllowedError } from './seed/guard.js';
-import { seedDatabase } from './seed/seed.js';
+import { resolveSeedPassword, seedDatabase } from './seed/seed.js';
 
 // Prisma 7 tidak memuat `.env` otomatis (sama seperti `prisma.config.ts`).
 try {
@@ -24,15 +24,22 @@ async function main(): Promise<void> {
   const target = assertSeedAllowed();
   console.log(`Seed → database "${target.databaseName}" …`);
 
+  const password = resolveSeedPassword();
   const prisma = createPrismaClient(target.databaseUrl);
   try {
     const startedAt = Date.now();
-    const counts = await seedDatabase(prisma);
+    const counts = await seedDatabase(prisma, { password });
     const seconds = ((Date.now() - startedAt) / 1000).toFixed(1);
     console.log(`Selesai dalam ${seconds} dtk. Baris per tabel:`);
     for (const [table, count] of Object.entries(counts)) {
       console.log(`  ${table.padEnd(18)} ${String(count)}`);
     }
+    // Dicetak dengan sengaja: akun seed tidak ada gunanya kalau kata sandinya
+    // harus ditebak, dan seed hanya boleh jalan di dev/tes (`guard.ts`).
+    console.log(
+      `\nLogin admin lokal: rani@ornament.id / ${password}\n` +
+        '(kata sandi dev untuk SEMUA akun seed; atur SEED_ADMIN_PASSWORD untuk mengubahnya)',
+    );
   } finally {
     await prisma.$disconnect();
   }

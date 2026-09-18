@@ -17,7 +17,13 @@ model katalog, konten, dan operasional (30 model, 22 enum) sesuai
 
 **Tahap 2 (T2.4): seed.** `npm run db:seed` mengisi database dev/tes dengan data
 mockup `frontend/lib/data.ts` yang sudah dipetakan ke model domain — lihat
-[§Seed data mockup](#seed-data-mockup). Modul domain/route (Tahap 4) menyusul.
+[§Seed data mockup](#seed-data-mockup).
+
+**Tahap 3 (T3.1–T3.2): auth & sesi.** Login/logout/`me` admin dengan kata sandi
+argon2id, sesi di database + cookie `__Host-osa_session`, guard sesi & peran,
+CORS + cek `Origin` sebagai pengganti token CSRF, serta rate limit dan lockout
+login — lihat [§Auth admin](#auth-admin). RBAC per endpoint (#15) dan modul
+pengguna/undangan (#16) menyusul.
 
 ## Struktur
 
@@ -28,10 +34,18 @@ src/
   config/env.ts        loadEnv() — skema Zod untuk process.env
   lib/errors.ts        AppError + ERROR_STATUS (status HTTP per ErrorCode §1.10) + helper (notFound(), …)
   lib/http.ts          ok() — membungkus data ke envelope sukses (kontrak §1.4)
+  lib/password.ts      hashPassword()/verifyPassword()/needsRehash() — argon2id (ADR K7)
+  modules/auth/session.ts        service sesi: token 32 byte, SHA-256 di DB, sliding refresh
+  modules/auth/cookie.ts         atribut cookie __Host-osa_session di satu tempat
+  modules/auth/guard.ts          app.requireSession / app.requireRole(...)
+  modules/auth/login-throttle.ts lockout login per email (in-memory)
+  modules/auth/me.ts             DTO Me + permissions turunan peran (kontrak §2.2/§3.3)
+  modules/auth/routes.ts         POST login, POST logout, GET me
   plugins/prisma.ts    registerPrisma() — decorate app.prisma + $disconnect saat onClose
   plugins/validation.ts  validator/serializer Zod, locale pesan Indonesia, hanya body JSON
   plugins/error-handler.ts  setErrorHandler + setNotFoundHandler → envelope error kontrak §1.5
   plugins/logger.ts    opsi pino (LOG_LEVEL, redaksi, pretty di dev) + X-Request-Id
+  plugins/admin-origin.ts  CORS allowlist ADMIN_ORIGIN + cek Origin non-GET + no-store
   routes/health.ts     GET /v1/health, GET /v1/health/ready
   generated/prisma/    Prisma Client hasil generate (tidak di-commit)
 prisma/
@@ -44,12 +58,14 @@ prisma/
   seed/seed.ts         seedDatabase() — TRUNCATE + isi ulang dalam satu transaksi
 prisma.config.ts       konfigurasi Prisma CLI (lokasi skema, migrasi, DATABASE_URL)
 test/
-  unit/                tes tanpa database (env, error, error handler, request ID, health)
+  unit/                tes tanpa database (env, error, error handler, request ID, health,
+                       argon2id, token sesi, lockout login, CORS/guard Origin)
   integration/         tes dengan database tes nyata + global-setup.ts (prisma migrate deploy);
                        schema-constraints.test.ts membuktikan CHECK/unik/Restrict berlaku di DB;
                        seed.test.ts menjalankan seed ke DB tes lalu membersihkannya
   helpers/app.ts       buildTestApp() — app dengan logger mati, ditutup otomatis di akhir tes
   helpers/database.ts  resolveTestDatabaseUrl() + createTestPrisma() — hanya DB `*_test`
+  helpers/auth.ts      fixture pengguna, pembaca Set-Cookie, dan pembaca respons bertipe
 vitest.config.ts       project Vitest `unit` dan `integration`
 docker/postgres-init/  skrip init container Postgres (membuat ornament_test)
 .env.example           template env — salin ke .env
@@ -256,9 +272,31 @@ Yang **tidak** ada sumbernya di mockup, dan karena itu tidak diisi: berkas media
 (tabel `media` kosong, semua `*ImageId` null — produk terbit karenanya belum
 memenuhi syarat publish §6.3 yang berlaku di lapisan API), sesi, undangan,
 revisi produk, galeri & dokumen pengrajin, lampiran inquiry, dan redirect slug.
-Email komentar (wajib per §3.6) dibuat sintetis `@example.com`; kolom
-`passwordHash` diisi penanda yang **bukan** encoding argon2id yang sah, sehingga
-tidak ada akun seed yang bisa dipakai login sampai modul auth (ADR K7) ada.
+Email komentar (wajib per §3.6) dibuat sintetis `@example.com`.
+
+### Kata sandi akun seed
+
+Mockup tidak memuat kata sandi, jadi **semua** akun seed memakai satu kata sandi
+dev yang sama, di-hash argon2id seperti kata sandi sungguhan (ADR K7):
+
+| Sumber | Nilai |
+| --- | --- |
+| `SEED_ADMIN_PASSWORD` di env | dipakai apa adanya (minimal 8 karakter) |
+| tidak di-set | `DEV_ONLY_PASSWORD` |
+
+Nilai yang dipakai **dicetak** di akhir `npm run db:seed` bersama satu email
+contoh, supaya tidak perlu ditebak:
+
+```
+Login admin lokal: rani@ornament.id / DEV_ONLY_PASSWORD
+```
+
+Akun seed dan perannya: `rani@ornament.id` (Administrator), `sekar@ornament.id`
+dan `dwi@ornament.id` (Editor), `bagus@ornament.id` (Contributor).
+
+> Kata sandi ini sengaja terbaca sebagai "hanya untuk lokal". Seed hanya boleh
+> jalan di dev/tes (`prisma/seed/guard.ts`), tetapi tetap: jangan pernah
+> menjalankan seed terhadap database yang bisa diakses orang lain.
 
 ## Tes
 
@@ -292,6 +330,8 @@ npm run test --workspace backend -- test/unit/env.test.ts   # satu file
 - Tes integrasi memverifikasi `current_database()` berakhiran `_test`.
 - Tes yang menulis data membuat fixture bersufiks acak dan menghapusnya di
   `afterAll`, sehingga `ornament_test` kembali kosong setelah `npm test`.
+  `auth.test.ts` mengikuti aturan yang sama: ia membuat pengguna sendiri (email
+  bersufiks acak) dan **tidak** membaca satu pun baris seed.
 - Berkas project `integration` dijalankan **berurutan** (`fileParallelism: false`):
   `seed.test.ts` mengosongkan lalu mengisi ulang seluruh database tes, jadi ia
   tidak boleh berjalan bersamaan dengan berkas lain. Berkas itu juga
@@ -314,6 +354,182 @@ test('contoh', async () => {
 
 Setiap tes membangun app sendiri; jangan berbagi state antar-tes atau
 antar-file agar hasil tidak bergantung urutan.
+
+## Auth admin
+
+Sesi di database + cookie httpOnly (ADR K7), kontrak API §2. Tidak ada JWT dan
+tidak ada token CSRF terpisah.
+
+### Alur
+
+```
+POST /v1/admin/auth/login     email + kata sandi + rememberMe  → 200 { data: { user: Me } } + Set-Cookie
+GET  /v1/admin/auth/me        cookie sesi                      → 200 { data: Me }
+POST /v1/admin/auth/logout    cookie sesi (opsional)           → 204 + cookie dihapus
+```
+
+1. **Login.** Email wajib berakhiran `@ornament.id` (ditolak
+   `400 VALIDATION_FAILED` dengan `details[].code = "email_domain"`) dan
+   `User.status` harus `ACTIVE`. Kata sandi diverifikasi terhadap hash argon2id.
+2. **Sesi.** Sukses → token acak **32 byte** (base64url, 43 karakter). Database
+   hanya menyimpan **SHA-256**-nya di `Session.tokenHash`; token mentah hanya
+   ada di cookie, jadi dump database tidak bisa dipakai membajak sesi.
+3. **`Me`.** `permissions` diturunkan dari `role` lewat `ROLE_PERMISSIONS` di
+   `@ornament/shared` (kontrak §3.3) dan hanya dipakai frontend untuk
+   menyembunyikan tombol — server tetap memeriksa izin di setiap rute.
+4. **Logout.** Menghapus **satu** baris `Session` (perangkat lain tetap masuk),
+   selalu `204` walau cookie sudah tidak sah.
+
+### Cookie
+
+```
+__Host-osa_session=<token>; Max-Age=43200; Path=/; HttpOnly; Secure; SameSite=Strict
+```
+
+Prefiks `__Host-` mewajibkan `Secure`, `Path=/`, dan **tanpa** `Domain`, jadi
+cookie milik host API saja dan tidak menyebar ke subdomain lain. Atributnya
+dikunci di `src/modules/auth/cookie.ts` supaya tidak ada rute yang lupa salah
+satu. Browser memperlakukan `http://localhost` sebagai origin aman, jadi
+`Secure` tidak menghalangi dev.
+
+### Masa berlaku & sliding refresh
+
+| | Tanpa "Ingat saya" | "Ingat saya" |
+| --- | --- | --- |
+| Jendela idle (`expiresAt`, `Max-Age`) | 12 jam | 30 hari |
+| Batas mutlak (`absoluteExpiresAt`) | 7 hari | 90 hari |
+
+Setiap request admin yang sah memperpanjang `expiresAt` (dibatasi
+`absoluteExpiresAt`) dan menyegarkan `lastSeenAt` + `User.lastActiveAt`
+**maksimal 1×/menit**, lalu mengirim ulang cookie dengan token yang sama.
+"Ingat saya" tidak disimpan sebagai kolom: ia dibaca kembali dari rentang
+`absoluteExpiresAt - createdAt` (7 hari vs 90 hari).
+
+Sesi dihapus saat: logout, `expiresAt`/`absoluteExpiresAt` terlewat (dibersihkan
+saat cookie dipakai lagi), dan `User.status = REVOKED` (semua sesi user itu
+sekaligus). `deleteExpiredSessions()` tersedia untuk job pembersih nanti.
+
+### Kata sandi (argon2id)
+
+`src/lib/password.ts`, lewat `@node-rs/argon2` (binary prebuilt per platform —
+tidak ada kompilasi native saat install).
+
+| Parameter | Nilai | Catatan |
+| --- | --- | --- |
+| Algoritma | argon2id v19 | Hibrida: tahan GPU **dan** side-channel |
+| `m` (memori) | 65536 KiB (64 MiB) | ~3× batas bawah OWASP (19456) |
+| `t` (iterasi) | 3 | |
+| `p` (lane) | 1 | Node single-threaded; `p > 1` tidak sepadan |
+| Keluaran / salt | 32 byte / 16 byte acak | Salt dibuat pustaka per hash |
+
+Sekitar 85 ms per hash pada laptop. `needsRehash()` menandai hash berparameter
+lebih lemah (atau bukan argon2id v19); login menulis ulang hash seperti itu
+selagi kata sandi mentah masih ada, sehingga menaikkan biaya nanti tidak
+memutus akun lama.
+
+### Guard sesi & peran
+
+```ts
+app.get('/admin/products', { preHandler: app.requireSession }, async (request) => {
+  const { user } = currentSession(request); // bertipe, tanpa tipe Prisma
+  // …
+});
+
+// Fondasi RBAC per endpoint (#15) — matriks lengkapnya belum dipasang:
+app.delete(
+  '/admin/users/:id',
+  { preHandler: [app.requireSession, app.requireRole('ADMINISTRATOR')] },
+  handler,
+);
+```
+
+| Situasi | Respons |
+| --- | --- |
+| Tanpa cookie / token tak dikenal / kedaluwarsa / user `REVOKED` | `401 UNAUTHENTICATED` + cookie penghapus |
+| Sesi sah, peran tidak cukup | `403 FORBIDDEN`, `details.requiredRoles` |
+| Login gagal (sebab apa pun) | `401 INVALID_CREDENTIALS` — pesan **selalu** sama |
+
+Contoh: pengguna `REVOKED` menjawab `401 UNAUTHENTICATED` (bukan `403`) persis
+seperti kontrak §2.4, agar admin melakukan redirect ke `/admin/login`.
+
+### CORS & cek Origin (pengganti token CSRF)
+
+`src/plugins/admin-origin.ts`, hanya untuk `/v1/admin/*`:
+
+- **CORS**: allowlist **satu** origin dari `ADMIN_ORIGIN`, `credentials: true`,
+  tanpa wildcard; metode `GET,POST,PATCH,PUT,DELETE`, header `Content-Type,
+  Idempotency-Key, X-Request-Id` (kontrak §2.1). Situs publik tidak masuk
+  allowlist — ia memanggil `/v1/public/*` server-to-server.
+- **Cek Origin**: setiap non-GET wajib membawa `Origin` yang sama dengan
+  `ADMIN_ORIGIN`, jika tidak → `403 ORIGIN_NOT_ALLOWED`, **sebelum** cek sesi
+  dan sebelum validasi body. Request tanpa `Origin` juga ditolak.
+- Semua respons admin memakai `Cache-Control: no-store`.
+
+Tanpa `ADMIN_ORIGIN`, guard bersikap **fail-closed**: tidak ada origin yang
+diizinkan, jadi seluruh non-GET admin (termasuk login) ditolak `403`. Variabelnya
+tetap opsional di `loadEnv()` agar server/health dan CI tetap jalan tanpanya;
+server mencatat peringatan saat start.
+
+### Rate limit & lockout login
+
+| Kunci | Batas | Mekanisme |
+| --- | --- | --- |
+| IP, `POST /admin/auth/login` | 20 / 15 menit | `@fastify/rate-limit` (store in-memory) |
+| Email, `POST /admin/auth/login` | 5 **gagal** / 15 menit | `LoginThrottle` (in-memory) |
+| IP, `logout` & `me` | 600 / menit | `@fastify/rate-limit`, jaring pengaman |
+
+Keduanya menjawab `429 RATE_LIMITED` lewat helper `rateLimited()`, jadi
+respons tetap envelope kontrak §1.5 dengan `details.retryAfterSeconds` **dan**
+header `Retry-After` (plus `RateLimit-*` draft IETF). Pesannya generik —
+"Terlalu banyak permintaan. Coba lagi nanti." — dan tidak pernah menyebut email
+atau akun, sehingga tidak bisa dipakai memastikan sebuah email terdaftar.
+
+Selama email terkunci, respons tetap `429` walau kata sandinya benar (kontrak
+§2.3); login sukses mereset hitungan.
+
+Agar "email tidak terdaftar" tidak lebih cepat daripada "kata sandi salah",
+login memverifikasi kata sandi terhadap **hash dummy** bila email tidak
+ditemukan, dan tetap memverifikasi hash pengguna `REVOKED`.
+
+> **Batasan yang disengaja:** kedua state ada di memori proses. Begitu API
+> berjalan lebih dari satu instance, batas efektif menjadi `batas × jumlah
+> instance` dan hilang setiap restart/deploy. ADR K8 mengasumsikan satu proses
+> hidup lama, jadi hari ini cukup; saat scale-out, pindahkan ke store bersama
+> (opsi `redis` pada plugin, dan tabel PostgreSQL untuk lockout lewat migrasi
+> baru).
+
+### Login lokal dengan akun seed
+
+```bash
+# 1. DB jalan, migrasi terpasang, dan seed sudah diisi
+npm run db:up                    # di root
+npm run db:migrate --workspace backend
+npm run db:seed --workspace backend   # mencetak kata sandi dev di akhir
+
+# 2. ADMIN_ORIGIN harus di-set (sudah ada di .env.example)
+grep ADMIN_ORIGIN backend/.env   # ADMIN_ORIGIN=http://localhost:3000
+
+# 3. Jalankan API
+npm run dev --workspace backend
+
+# 4. Login — Origin WAJIB, dan cookie disimpan ke jar
+curl -i -X POST http://localhost:4000/v1/admin/auth/login \
+  -H 'Content-Type: application/json' \
+  -H 'Origin: http://localhost:3000' \
+  -c /tmp/osa-cookie.txt \
+  -d '{"email":"rani@ornament.id","password":"DEV_ONLY_PASSWORD","rememberMe":false}'
+
+# 5. Pakai sesinya, lalu logout
+curl -i -b /tmp/osa-cookie.txt http://localhost:4000/v1/admin/auth/me
+curl -i -X POST -H 'Origin: http://localhost:3000' \
+  -b /tmp/osa-cookie.txt http://localhost:4000/v1/admin/auth/logout
+```
+
+Dari browser admin: `fetch(url, { credentials: "include" })` — cookie
+`SameSite=Strict` hanya terkirim bila admin dan API same-site (ADR K7).
+
+Log pino menyensor header `cookie`/`set-cookie` dan field `password`, dan body
+request tidak pernah dicatat: token sesi maupun kata sandi tidak muncul di log.
 
 ## HTTP API: konvensi dasar
 
