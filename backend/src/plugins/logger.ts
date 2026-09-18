@@ -46,6 +46,23 @@ export const REDACT_PATHS = [
   '*.currentPassword',
 ];
 
+/**
+ * Token undangan ada di **path** (`GET /v1/admin/auth/invites/:token`), bukan di
+ * header atau body, sehingga `redact` pino tidak menjangkaunya sementara
+ * Fastify mencatat `req.url` di setiap request. Token itu setara kredensial:
+ * siapa pun yang membacanya di log bisa menerima undangan orang lain. Karena
+ * itu segmennya disensor sebelum masuk log.
+ *
+ * Token sesi tidak butuh perlakuan ini (ia hanya ada di cookie, yang sudah
+ * disensor), dan token undangan pada `POST .../accept` ada di body — body
+ * request memang tidak pernah dicatat.
+ */
+const INVITE_TOKEN_URL = /^(\/v1\/admin\/auth\/invites\/)(?!accept(?:[/?#]|$))[^/?#]+/;
+
+export function redactUrl(url: string): string {
+  return url.replace(INVITE_TOKEN_URL, '$1[REDACTED]');
+}
+
 function isPrettyAvailable(): boolean {
   try {
     import.meta.resolve('pino-pretty');
@@ -70,7 +87,7 @@ export function buildLoggerOptions(config: Env | undefined): LoggerOption {
       req(request) {
         return {
           method: request.method,
-          url: request.url,
+          url: redactUrl(request.url),
           host: request.host,
           remoteAddress: request.ip,
           headers: request.headers,

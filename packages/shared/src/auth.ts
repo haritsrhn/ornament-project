@@ -126,6 +126,17 @@ export function roleHasPermission(role: UserRole, permission: Permission): boole
   return (ROLE_PERMISSIONS[role] as readonly Permission[]).includes(permission);
 }
 
+/**
+ * Peran yang memiliki sebuah izin, urut seperti `USER_ROLES`.
+ *
+ * Dipakai backend untuk mengisi `details.requiredRoles` pada `403 FORBIDDEN`
+ * (kontrak §1.10) tanpa menulis ulang matriks izin di guard: satu tabel
+ * (`ROLE_PERMISSIONS`) menjawab "siapa yang boleh" dan "tombol mana yang tampil".
+ */
+export function rolesWithPermission(permission: Permission): UserRole[] {
+  return USER_ROLES.filter((role) => roleHasPermission(role, permission));
+}
+
 // ── Cookie sesi (ADR K7, kontrak §2.1) ───────────────────────────────────────
 
 /**
@@ -175,7 +186,7 @@ export const passwordSchema = z
  * `params.code = "email_domain"` agar `details[].code` di respons sesuai
  * kontrak §1.5 (backend memetakan `params.code` → `code`).
  */
-export const loginEmailSchema = z
+export const ornamentEmailSchema = z
   .string()
   .trim()
   .toLowerCase()
@@ -184,6 +195,20 @@ export const loginEmailSchema = z
     error: EMAIL_DOMAIN_MESSAGE,
     params: { code: EMAIL_DOMAIN_ISSUE_CODE },
   });
+
+/**
+ * Alias historis: email login memakai aturan yang sama dengan email undangan
+ * dan email pengguna admin lain (`@ornament.id`, dinormalisasi).
+ */
+export const loginEmailSchema = ornamentEmailSchema;
+
+/** Nama tampilan pengguna (kontrak §2.2 & §5.13: 1–100 karakter, di-trim). */
+export const USER_NAME_MAX_LENGTH = 100;
+export const userNameSchema = z
+  .string()
+  .trim()
+  .min(1, 'Nama wajib diisi.')
+  .max(USER_NAME_MAX_LENGTH, `Nama maksimal ${String(USER_NAME_MAX_LENGTH)} karakter.`);
 
 /** `POST /v1/admin/auth/login`. `rememberMe` = radio "Ingat saya" di layar login. */
 export const loginBodySchema = z.strictObject({
@@ -201,3 +226,53 @@ export type LoginResponse = z.infer<typeof loginResponseSchema>;
 /** `GET /v1/admin/auth/me`. */
 export const meResponseSchema = dataEnvelope(meSchema);
 export type MeResponse = z.infer<typeof meResponseSchema>;
+
+/** `POST /v1/admin/auth/password` — ganti kata sandi sendiri (kontrak §2.2). */
+export const changePasswordBodySchema = z.strictObject({
+  currentPassword: passwordSchema,
+  newPassword: passwordSchema,
+});
+export type ChangePasswordBody = z.infer<typeof changePasswordBodySchema>;
+
+// ── Undangan: endpoint tanpa sesi (kontrak §2.2) ─────────────────────────────
+
+/** Panjang token undangan mentah sebelum base64url (32 byte CSPRNG, ADR K7). */
+export const INVITE_TOKEN_BYTES = 32;
+
+/** 32 byte base64url = 43 karakter tanpa padding — sama seperti token sesi. */
+export const INVITE_TOKEN_PATTERN = /^[A-Za-z0-9_-]{43}$/;
+
+/**
+ * Token undangan di path/body. Bentuknya divalidasi seperti string biasa
+ * (panjang wajar) supaya token salah **selalu** dijawab `404 NOT_FOUND` oleh
+ * handler — bukan `400 VALIDATION_FAILED`, yang akan memberi tahu penyerang
+ * bahwa tebakannya "bentuknya benar".
+ */
+export const inviteTokenSchema = z.string().min(1).max(200);
+
+export const inviteTokenParamsSchema = z.object({ token: inviteTokenSchema });
+
+/** `GET /v1/admin/auth/invites/:token` — pratinjau undangan sebelum diterima. */
+export const invitePreviewSchema = z.object({
+  email: z.string(),
+  role: userRoleSchema,
+  expiresAt: z.iso.datetime(),
+  invitedBy: z.object({ name: z.string() }),
+});
+export type InvitePreview = z.infer<typeof invitePreviewSchema>;
+
+export const invitePreviewResponseSchema = dataEnvelope(invitePreviewSchema);
+export type InvitePreviewResponse = z.infer<typeof invitePreviewResponseSchema>;
+
+/** `POST /v1/admin/auth/invites/accept` — menetapkan nama + kata sandi sendiri. */
+export const acceptInviteBodySchema = z.strictObject({
+  token: inviteTokenSchema,
+  name: userNameSchema,
+  password: passwordSchema,
+});
+export type AcceptInviteBody = z.infer<typeof acceptInviteBodySchema>;
+export type AcceptInviteBodyInput = z.input<typeof acceptInviteBodySchema>;
+
+/** Sama seperti login: `201 { data: { user: Me } }` + cookie sesi 12 jam. */
+export const acceptInviteResponseSchema = dataEnvelope(z.object({ user: meSchema }));
+export type AcceptInviteResponse = z.infer<typeof acceptInviteResponseSchema>;

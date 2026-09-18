@@ -2,6 +2,7 @@ import type { ErrorCode, ErrorEnvelope, ValidationDetail } from '@ornament/share
 import type { FastifyError, FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 
 import { ERROR_STATUS, isAppError } from '../lib/errors.js';
+import { redactUrl } from './logger.js';
 
 /** Pemetaan error bawaan Fastify (kode `FST_ERR_*`) ke kode kontrak §1.10. */
 const FASTIFY_CODE_MAP: Record<string, { code: ErrorCode; message: string }> = {
@@ -138,7 +139,7 @@ export function registerErrorHandling(app: FastifyInstance): void {
       reply,
       404,
       'NOT_FOUND',
-      `Rute ${request.method} ${request.url.split('?', 1)[0] ?? ''} tidak ditemukan.`,
+      `Rute ${request.method} ${redactUrl(request.url).split('?', 1)[0] ?? ''} tidak ditemukan.`,
     ),
   );
 

@@ -305,7 +305,8 @@ model Invite {
   invitedById    String    @map("invited_by_id") @db.Uuid
   acceptedAt     DateTime? @map("accepted_at") @db.Timestamptz
   revokedAt      DateTime? @map("revoked_at") @db.Timestamptz
-  /// Hasil kirim Resend (ADR K4).
+  /// Hasil kirim Resend (ADR K4). `emailSentAt` null = belum/gagal terkirim.
+  emailSentAt    DateTime? @map("email_sent_at") @db.Timestamptz
   emailMessageId String?   @map("email_message_id")
   emailError     String?   @map("email_error")
   createdAt      DateTime  @default(now()) @map("created_at") @db.Timestamptz

@@ -4,9 +4,12 @@ import Fastify, { LogController, type FastifyInstance } from 'fastify';
 
 import type { Env } from './config/env.js';
 import type { PrismaClient } from './generated/prisma/client.js';
+import type { EmailSender } from './modules/email/sender.js';
 import { registerAuthGuard } from './modules/auth/guard.js';
-import type { LoginThrottle } from './modules/auth/login-throttle.js';
+import type { LoginThrottle, PasswordChangeThrottle } from './modules/auth/login-throttle.js';
 import { authRoutes } from './modules/auth/routes.js';
+import { invitesRoutes } from './modules/invites/routes.js';
+import { usersRoutes } from './modules/users/routes.js';
 import { registerAdminOrigin } from './plugins/admin-origin.js';
 import { registerErrorHandling } from './plugins/error-handler.js';
 import {
@@ -46,6 +49,14 @@ export interface BuildAppOptions {
    * lewat" bisa dibuktikan tanpa menunggu 15 menit.
    */
   loginThrottle?: LoginThrottle;
+  /** Batas ganti kata sandi per user (#16); default parameter kontrak §2.3. */
+  passwordThrottle?: PasswordChangeThrottle;
+  /**
+   * Pengirim email undangan (ADR K4). Default `NoopEmailSender`: modul Resend
+   * baru dibangun di tahap berikutnya, jadi undangan tersimpan dan statusnya
+   * ditandai "belum terkirim" alih-alih berpura-pura sukses.
+   */
+  emailSender?: EmailSender;
 }
 
 /**
@@ -107,10 +118,21 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
   registerAuthGuard(app);
 
   void app.register(healthRoutes, { prefix: '/v1' });
+  const mediaPublicUrl =
+    config?.R2_PUBLIC_URL === undefined ? {} : { mediaPublicUrl: config.R2_PUBLIC_URL };
+
   void app.register(authRoutes, {
     prefix: '/v1',
-    ...(config?.R2_PUBLIC_URL === undefined ? {} : { mediaPublicUrl: config.R2_PUBLIC_URL }),
+    ...mediaPublicUrl,
     ...(options.loginThrottle === undefined ? {} : { loginThrottle: options.loginThrottle }),
+    ...(options.passwordThrottle === undefined
+      ? {}
+      : { passwordThrottle: options.passwordThrottle }),
+  });
+  void app.register(usersRoutes, { prefix: '/v1', ...mediaPublicUrl });
+  void app.register(invitesRoutes, {
+    prefix: '/v1',
+    ...(options.emailSender === undefined ? {} : { emailSender: options.emailSender }),
   });
 
   return app;

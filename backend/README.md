@@ -149,6 +149,11 @@ npx prisma migrate status
 - Migrasi yang sudah di-commit **tidak diedit lagi**; perbaikan dibuat sebagai
   migrasi baru (checksum migrasi tersimpan di `_prisma_migrations`).
 
+| Migrasi | Isi |
+| --- | --- |
+| `…_model_domain_awal` | Seluruh model domain + blok SQL manual di bawah |
+| `…_invite_email_sent_at` | `invite.email_sent_at` (nullable) untuk `AdminInvite.emailSentAt` kontrak §5.13; model domain §3.1 hanya menyebut `email_message_id`/`email_error`, yang tidak bisa menjawab "kapan terkirim". Baris lama otomatis berarti "belum/gagal terkirim" |
+
 Reset database lokal (dev saja — **menghapus semua data**):
 
 ```bash
@@ -363,9 +368,12 @@ tidak ada token CSRF terpisah.
 ### Alur
 
 ```
-POST /v1/admin/auth/login     email + kata sandi + rememberMe  → 200 { data: { user: Me } } + Set-Cookie
-GET  /v1/admin/auth/me        cookie sesi                      → 200 { data: Me }
-POST /v1/admin/auth/logout    cookie sesi (opsional)           → 204 + cookie dihapus
+POST /v1/admin/auth/login              email + kata sandi + rememberMe  → 200 { data: { user: Me } } + Set-Cookie
+GET  /v1/admin/auth/me                 cookie sesi                      → 200 { data: Me }
+POST /v1/admin/auth/logout             cookie sesi (opsional)           → 204 + cookie dihapus
+POST /v1/admin/auth/password           cookie sesi + sandi lama & baru   → 204, sesi LAIN dicabut
+GET  /v1/admin/auth/invites/:token     tanpa sesi                        → 200 pratinjau undangan
+POST /v1/admin/auth/invites/accept     tanpa sesi: token + nama + sandi   → 201 { data: { user: Me } } + Set-Cookie
 ```
 
 1. **Login.** Email wajib berakhiran `@ornament.id` (ditolak
@@ -427,30 +435,132 @@ lebih lemah (atau bukan argon2id v19); login menulis ulang hash seperti itu
 selagi kata sandi mentah masih ada, sehingga menaikkan biaya nanti tidak
 memutus akun lama.
 
-### Guard sesi & peran
+### Guard sesi & izin (RBAC)
+
+Setiap rute `/v1/admin/*` **wajib** menyatakan aksesnya lewat
+`config.adminAccess`. Hook `onRoute` di `src/modules/auth/guard.ts` membaca
+penanda itu dan memasang sendiri hook `onRequest` yang sesuai:
 
 ```ts
-app.get('/admin/products', { preHandler: app.requireSession }, async (request) => {
+import { adminPermission, adminPublic, adminSession, currentSession } from '../auth/guard.js';
+
+// Butuh sesi + izin `user.manage` (matriks kontrak §3 → hanya Administrator).
+app.get('/admin/users', { config: { adminAccess: adminPermission('user.manage') } }, handler);
+
+// Butuh sesi, semua peran boleh.
+app.get('/admin/auth/me', { config: { adminAccess: adminSession() } }, (request) => {
   const { user } = currentSession(request); // bertipe, tanpa tipe Prisma
-  // …
 });
 
-// Fondasi RBAC per endpoint (#15) — matriks lengkapnya belum dipasang:
-app.delete(
-  '/admin/users/:id',
-  { preHandler: [app.requireSession, app.requireRole('ADMINISTRATOR')] },
-  handler,
-);
+// Sengaja tanpa sesi — alasannya wajib ditulis dan terlihat saat review.
+app.post('/admin/auth/login', { config: { adminAccess: adminPublic('membuat sesi') } }, handler);
 ```
+
+Dua konsekuensi yang disengaja:
+
+1. **Rute admin yang lupa menyatakan akses gagal saat registrasi**
+   (`MissingAdminAccessError`) — server tidak start dan semua tes gagal, alih-alih
+   rutenya diam-diam terbuka. Ini pengaman untuk modul Tahap 4+.
+   `test/unit/admin-access.test.ts` menyisir ulang seluruh rute terdaftar dan
+   juga mengunci daftar rute admin yang boleh tanpa sesi.
+2. Tidak ada rute yang bisa "punya izin tapi lupa guard sesi": keduanya dipasang
+   dari satu tempat.
+
+Guard berjalan di **`onRequest`**, bukan `preHandler`, sehingga urutannya persis
+kontrak §1.10: `Origin` → `401` sesi → `403` izin → `400` validasi. Pemanggil
+tanpa hak karena itu tidak pernah menerima detail validasi maupun `404`
+keberadaan resource.
 
 | Situasi | Respons |
 | --- | --- |
 | Tanpa cookie / token tak dikenal / kedaluwarsa / user `REVOKED` | `401 UNAUTHENTICATED` + cookie penghapus |
-| Sesi sah, peran tidak cukup | `403 FORBIDDEN`, `details.requiredRoles` |
+| Sesi sah, izin kurang | `403 FORBIDDEN`, `details: { requiredPermission, requiredRoles }` |
 | Login gagal (sebab apa pun) | `401 INVALID_CREDENTIALS` — pesan **selalu** sama |
+
+Sumber matriksnya satu: `ROLE_PERMISSIONS` di `@ornament/shared` (kontrak §3.3).
+`Me.permissions` (untuk menyembunyikan tombol) dan guard API membaca tabel yang
+sama, jadi UI dan server tidak bisa berbeda pendapat.
+
+| Kemampuan | ADM | EDT | CTR | Izin |
+| --- | --- | --- | --- | --- |
+| Mengelola pengguna & undangan | ✓ | — | — | `user.manage` |
+| Menerbitkan produk & artikel | ✓ | ✓ | — | `product.publish`, `article.publish` |
+| Mengelola pengrajin | ✓ | ✓ | — | `artisan.write` |
+| Membalas inquiry | ✓ | ✓ | — | `inquiry.manage` |
+| Settings & tema | ✓ | — | — | `settings.manage` |
 
 Contoh: pengguna `REVOKED` menjawab `401 UNAUTHENTICATED` (bukan `403`) persis
 seperti kontrak §2.4, agar admin melakukan redirect ke `/admin/login`.
+
+### Ganti kata sandi sendiri
+
+`POST /v1/admin/auth/password` (`{ currentPassword, newPassword }`, semua peran):
+verifikasi sandi lama → hash baru argon2id → **semua sesi lain dicabut**, sesi
+pemanggil bertahan (ADR K7). Sandi lama salah → `401 INVALID_CREDENTIALS`
+(bukan `UNAUTHENTICATED`, supaya klien tidak ikut logout). Batas 5 percobaan /
+15 menit **per pengguna**, di samping batas per IP.
+
+### Pengguna & undangan (Administrator)
+
+```
+GET    /v1/admin/users               role?, status? (default ACTIVE, + ALL), q?, sort?, page?, pageSize?
+GET    /v1/admin/users/:id
+PATCH  /v1/admin/users/:id           { name?, role? }
+POST   /v1/admin/users/:id/revoke    → REVOKED + seluruh sesinya dihapus
+POST   /v1/admin/users/:id/reactivate→ ACTIVE (login lagi dengan sandi lama)
+GET    /v1/admin/invites             status? PENDING|EXPIRED|ACCEPTED|REVOKED|ALL (default PENDING)
+POST   /v1/admin/invites             { email (@ornament.id), role }        → 201 + token (sekali)
+POST   /v1/admin/invites/:id/resend  → token baru, +72 jam, token lama mati
+DELETE /v1/admin/invites/:id         → dicabut
+```
+
+`sort` hanya menerima `name`, `-name`, `lastActiveAt`, `-lastActiveAt`;
+`meta.counts` berisi jumlah per peran, dihitung dengan filter yang sama kecuali
+`role` (kontrak §1.4). `AdminUser.contentCount` (artikel/produk/revisi)
+diturunkan saat query — tidak ada kolomnya di database.
+
+**Aturan anti-lockout** (`src/modules/users/service.ts`), semuanya
+`422 BUSINESS_RULE_VIOLATION` dengan `details.rule`:
+
+| `rule` | Kapan |
+| --- | --- |
+| `CANNOT_CHANGE_OWN_ROLE` | Administrator mengubah **perannya sendiri** (mengubah namanya sendiri tetap boleh) |
+| `CANNOT_REVOKE_SELF` | Administrator mencabut **aksesnya sendiri** |
+| `LAST_ADMINISTRATOR` | Menurunkan peran / mencabut Administrator **aktif terakhir** |
+
+Dua aturan pertama bukan sekadar kenyamanan: karena pemanggil selalu
+Administrator aktif, melarang keduanya membuat sistem *secara struktural* selalu
+menyisakan minimal satu Administrator aktif, tanpa bergantung pada hasil `COUNT`
+yang bisa basi karena request lain berjalan bersamaan. `LAST_ADMINISTRATOR`
+tetap diperiksa sebagai jaring pengaman untuk data yang diubah di luar API.
+Konsekuensinya: menghapus Administrator terakhir hanya mungkin lewat database.
+
+### Alur undangan
+
+1. Administrator `POST /v1/admin/invites`. Server membuat token **32 byte dari
+   CSPRNG** (base64url, 43 karakter) dan menyimpan **hanya SHA-256**-nya di
+   `invite.token_hash`; masa berlaku **72 jam** (ADR K7). Satu undangan aktif
+   per email dijaga indeks unik parsial `invite_email_active_key`; undangan yang
+   sudah kedaluwarsa dipakai ulang oleh pembuatan berikutnya.
+2. Penerima membuka `GET /v1/admin/auth/invites/:token` (tanpa sesi) untuk
+   melihat email, peran, dan siapa yang mengundang.
+3. `POST /v1/admin/auth/invites/accept` (`{ token, name, password }`) membuat
+   `User` dan menandai undangan diterima **dalam satu transaksi**, lalu langsung
+   membuat sesi 12 jam. Token sekali pakai: klaim memakai `UPDATE … WHERE
+   accepted_at IS NULL`, jadi dua request bersamaan hanya menghasilkan satu akun.
+4. Token salah, kedaluwarsa, dicabut, atau sudah dipakai → **satu** respons
+   `404 NOT_FOUND` dengan pesan yang sama (anti enumerasi), dan kedua endpoint
+   tanpa sesi ini dibatasi 10 permintaan / 15 menit per IP.
+
+> **Email undangan belum terkirim.** Modul Resend (ADR K4) baru dibangun di
+> tahap berikutnya dan PR ini sengaja tidak menambah dependensi email. Yang ada
+> adalah antarmuka `EmailSender` (`src/modules/email/sender.ts`) dengan
+> implementasi `NoopEmailSender`: undangan tetap tersimpan, `emailSentAt` tetap
+> `null`, dan `emailError` diisi `EMAIL_NOT_CONFIGURED` — jujur, bukan
+> berpura-pura sukses. Karena itu `POST /invites` dan `/resend`
+> mengembalikan `token` mentah **satu kali** supaya tautan undangan bisa
+> dibagikan manual. Token itu tidak pernah muncul di `GET /invites` maupun di
+> log; begitu pengiriman email aktif, kembalikan `token: null`.
 
 ### CORS & cek Origin (pengganti token CSRF)
 
@@ -476,7 +586,9 @@ server mencatat peringatan saat start.
 | --- | --- | --- |
 | IP, `POST /admin/auth/login` | 20 / 15 menit | `@fastify/rate-limit` (store in-memory) |
 | Email, `POST /admin/auth/login` | 5 **gagal** / 15 menit | `LoginThrottle` (in-memory) |
-| IP, `logout` & `me` | 600 / menit | `@fastify/rate-limit`, jaring pengaman |
+| IP, `logout`, `me`, dan seluruh `/v1/admin/*` lain | 600 / menit | `@fastify/rate-limit`, jaring pengaman |
+| User, `POST /admin/auth/password` | 5 / 15 menit | `PasswordChangeThrottle` (in-memory) |
+| IP, `GET /admin/auth/invites/:token` & `POST .../accept` | 10 / 15 menit | `@fastify/rate-limit`, anti enumerasi token |
 
 Keduanya menjawab `429 RATE_LIMITED` lewat helper `rateLimited()`, jadi
 respons tetap envelope kontrak §1.5 dengan `details.retryAfterSeconds` **dan**
