@@ -24,6 +24,13 @@ import type { FastifyInstance } from 'fastify';
 
 import { AppError } from '../lib/errors.js';
 
+declare module 'fastify' {
+  interface FastifyContextConfig {
+    /** Ditandai oleh hook `onRoute` untuk setiap rute yang terdaftar di `/v1/admin/*`. */
+    isAdminRoute?: boolean;
+  }
+}
+
 /** Prefiks rute yang tunduk pada allowlist + cek Origin. */
 export const ADMIN_PATH_PREFIX = '/v1/admin';
 
@@ -41,8 +48,30 @@ export const ADMIN_CORS_EXPOSED_HEADERS = [
   'Retry-After',
 ] as const;
 
+/**
+ * Path yang dipakai router, bukan string mentah.
+ *
+ * find-my-way menjalankan `decodeURI()` (dan membuang bentuk absolut
+ * `http://host/...`) **sebelum** mencocokkan rute, jadi `/v1/%61dmin/...` tetap
+ * sampai ke handler admin. Mencocokkan `request.url` apa adanya berarti cek
+ * `Origin` — satu-satunya pengganti token CSRF — bisa dilewati hanya dengan
+ * meng-encode satu huruf. Karena itu path dinormalisasi dengan cara yang sama
+ * sebelum dibandingkan, dan bila decoding gagal path dianggap admin
+ * (fail-closed).
+ */
+export function routedPath(url: string): string {
+  const withoutScheme = url.startsWith('/') ? url : url.replace(/^[a-zA-Z][\w+.-]*:\/\/[^/]*/, '');
+  const path = withoutScheme.split(/[?#]/, 1)[0] ?? '';
+  try {
+    return decodeURIComponent(path);
+  } catch {
+    // URL-encoding rusak: tidak bisa disimpulkan, jadi diperlakukan sebagai admin.
+    return ADMIN_PATH_PREFIX;
+  }
+}
+
 export function isAdminPath(url: string): boolean {
-  const path = url.split('?', 1)[0] ?? '';
+  const path = routedPath(url);
   return path === ADMIN_PATH_PREFIX || path.startsWith(`${ADMIN_PATH_PREFIX}/`);
 }
 
@@ -82,8 +111,16 @@ export function registerAdminOrigin(app: FastifyInstance, options: AdminOriginOp
     maxAge: 600,
   });
 
+  // Lapis kedua: rute admin ditandai saat registrasi, jadi keputusan "ini rute
+  // admin" juga datang dari hasil routing, bukan hanya dari string URL.
+  app.addHook('onRoute', (routeOptions) => {
+    if (isAdminPath(routeOptions.url)) {
+      routeOptions.config = { ...routeOptions.config, isAdminRoute: true };
+    }
+  });
+
   app.addHook('onRequest', (request, reply, done) => {
-    if (!isAdminPath(request.url)) {
+    if (!isAdminPath(request.url) && request.routeOptions.config.isAdminRoute !== true) {
       done();
       return;
     }

@@ -5,6 +5,7 @@ import {
   ADMIN_CORS_METHODS,
   isAdminPath,
   normalizeOrigin,
+  routedPath,
 } from '../../src/plugins/admin-origin.js';
 import { buildTestApp } from '../helpers/app.js';
 import { errorBody } from '../helpers/auth.js';
@@ -22,6 +23,26 @@ describe('isAdminPath / normalizeOrigin', () => {
     expect(isAdminPath('/v1/public/products')).toBe(false);
     // Bukan prefiks: jangan tertipu path yang hanya mirip.
     expect(isAdminPath('/v1/administrator')).toBe(false);
+  });
+
+  test('path yang di-encode tetap dikenali admin (router men-decode dulu)', () => {
+    // find-my-way menjalankan decodeURI() sebelum mencocokkan rute, jadi
+    // /v1/%61dmin/... sampai ke handler admin dan harus ikut dicek Origin.
+    expect(isAdminPath('/v1/%61dmin/auth/logout')).toBe(true);
+    expect(isAdminPath('/v1/ad%6din/auth/me')).toBe(true);
+    expect(isAdminPath('/v1/%61dmin')).toBe(true);
+    // Bentuk absolut (request-target absolute-form) juga ter-rute.
+    expect(isAdminPath('http://api.ornament.id/v1/admin/auth/logout')).toBe(true);
+    // Encoding rusak: fail-closed, diperlakukan sebagai admin.
+    expect(isAdminPath('/v1/%zz')).toBe(true);
+    // Yang bukan admin tetap bukan admin setelah decoding.
+    expect(isAdminPath('/v1/%70ublic/products')).toBe(false);
+  });
+
+  test('routedPath membuang query, fragment, dan bagian absolut', () => {
+    expect(routedPath('/v1/admin/products?page=2')).toBe('/v1/admin/products');
+    expect(routedPath('/v1/admin/products#x')).toBe('/v1/admin/products');
+    expect(routedPath('https://api.ornament.id/v1/admin')).toBe('/v1/admin');
   });
 
   test('origin dinormalisasi ke skema+host+port, trailing slash diabaikan', () => {
@@ -42,6 +63,23 @@ describe('cek Origin non-GET (ADR K7, kontrak §1.2)', () => {
     });
     expect(res.statusCode).toBe(403);
     expect(errorBody(res)).toMatchObject({ code: 'ORIGIN_NOT_ALLOWED' });
+  });
+
+  test('POST ke path admin yang di-encode tidak bisa melewati cek Origin', async () => {
+    const app = buildTestApp({ adminOrigin: ADMIN_ORIGIN });
+    const res = await app.inject({
+      method: 'POST',
+      url: '/v1/%61dmin/auth/logout',
+      headers: { origin: 'https://penyerang.example' },
+    });
+    expect(res.statusCode).toBe(403);
+    expect(errorBody(res).code).toBe('ORIGIN_NOT_ALLOWED');
+  });
+
+  test('GET ke path admin yang di-encode tetap mendapat Cache-Control: no-store', async () => {
+    const app = buildTestApp({ adminOrigin: ADMIN_ORIGIN });
+    const res = await app.inject({ method: 'GET', url: '/v1/%61dmin/auth/me' });
+    expect(res.headers['cache-control']).toBe('no-store');
   });
 
   test('POST tanpa header Origin juga ditolak', async () => {
