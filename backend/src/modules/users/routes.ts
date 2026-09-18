@@ -32,6 +32,15 @@ export interface UsersRoutesOptions {
 }
 
 /** `where` dari query (kontrak §1.7). `role` dipisah agar `counts` bisa mengabaikannya. */
+/**
+ * `contains` Prisma diterjemahkan ke `LIKE '%q%'`, dan `%`/`_`/`\\` di `q` akan
+ * diperlakukan sebagai wildcard. Bukan celah injeksi (query tetap
+ * terparameterisasi), tapi hasil pencariannya jadi tidak sesuai yang diketik.
+ */
+function escapeLike(value: string): string {
+  return value.replace(/[\\%_]/g, (char) => `\\${char}`);
+}
+
 function baseWhere(query: AdminUsersQuery): Prisma.UserWhereInput {
   return {
     ...(query.status === 'ALL' ? {} : { status: query.status }),
@@ -39,9 +48,9 @@ function baseWhere(query: AdminUsersQuery): Prisma.UserWhereInput {
       ? {}
       : {
           OR: [
-            { name: { contains: query.q, mode: 'insensitive' } },
+            { name: { contains: escapeLike(query.q), mode: 'insensitive' } },
             // `email` bertipe citext: `LIKE` di atasnya sudah case-insensitive.
-            { email: { contains: query.q } },
+            { email: { contains: escapeLike(query.q) } },
           ],
         }),
   };
@@ -153,7 +162,7 @@ export const usersRoutes: FastifyPluginAsyncZod<UsersRoutesOptions> = (app, opti
 
       if (role !== undefined && role !== target.role) {
         // Aturan anti-lockout; penjelasan lengkap di `service.ts`.
-        if (id === actor.id) throw cannotChangeOwnRole();
+        if (target.id === actor.id) throw cannotChangeOwnRole();
         await assertNotLastAdministrator(app.prisma, target);
       }
 
@@ -182,7 +191,7 @@ export const usersRoutes: FastifyPluginAsyncZod<UsersRoutesOptions> = (app, opti
       const actor = currentSession(request).user;
       const target = await loadUser(id);
 
-      if (id === actor.id) throw cannotRevokeSelf();
+      if (target.id === actor.id) throw cannotRevokeSelf();
       if (target.status === 'REVOKED') {
         throw new AppError('INVALID_STATE', 'Akses pengguna ini sudah dicabut.', {
           details: { current: 'REVOKED', allowed: ['ACTIVE'] },

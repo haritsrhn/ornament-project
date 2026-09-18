@@ -323,6 +323,27 @@ describe('aturan "tidak boleh mengunci diri sendiri"', () => {
     await app.close();
   });
 
+  test('UUID diri sendiri dalam huruf besar tidak melewati aturan itu', async () => {
+    // Postgres membandingkan tipe uuid tanpa peduli huruf besar/kecil, jadi cek
+    // diri sendiri harus memakai id hasil DB, bukan string dari path.
+    const app = buildTestApp();
+    const admin = await makeUser({ role: 'ADMINISTRATOR' });
+    const token = await loginToken(app, admin.email, admin.password);
+
+    const res = await adminRequest(app, {
+      method: 'PATCH',
+      url: `/v1/admin/users/${admin.id.toUpperCase()}`,
+      token,
+      payload: { role: 'EDITOR' },
+    });
+    expect(res.statusCode).toBe(422);
+    expect(errorBody(res).details).toEqual({ rule: 'CANNOT_CHANGE_OWN_ROLE' });
+
+    const unchanged = await prisma.user.findUniqueOrThrow({ where: { id: admin.id } });
+    expect(unchanged.role).toBe('ADMINISTRATOR');
+    await app.close();
+  });
+
   test('mengubah nama sendiri tetap boleh', async () => {
     const app = buildTestApp();
     const admin = await makeUser({ role: 'ADMINISTRATOR' });
