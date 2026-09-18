@@ -57,6 +57,21 @@ function splitInstancePath(instancePath: string): string[] {
 }
 
 /**
+ * Kode kontrak kustom (kontrak §1.5: `email_domain`, `slug_taken`, …).
+ *
+ * Zod hanya punya `code: "custom"` untuk `refine`/`check`, jadi skema bersama
+ * menitipkan kode kontraknya di `params` (`{ params: { code: "email_domain" } }`)
+ * dan di sini kode itu dipakai sebagai `details[].code`.
+ */
+function contractIssueCode(keyword: string, params: unknown): string {
+  if (keyword !== 'custom' || typeof params !== 'object' || params === null) return keyword;
+  const nested = (params as { params?: unknown }).params;
+  if (typeof nested !== 'object' || nested === null) return keyword;
+  const code = (nested as { code?: unknown }).code;
+  return typeof code === 'string' && code !== '' ? code : keyword;
+}
+
+/**
  * Mengubah `error.validation` (dari validatorCompiler Zod maupun Ajv) menjadi
  * `details[]` kontrak §1.5. `unrecognized_keys` dipecah satu entri per field agar
  * `path` menunjuk field yang ditolak. Path kosong (akar) diisi nama lokasi
@@ -68,7 +83,7 @@ export function toValidationDetails(error: FastifyError): ValidationDetail[] {
 
   for (const issue of error.validation ?? []) {
     const base = splitInstancePath(issue.instancePath);
-    const code = issue.keyword;
+    const code = contractIssueCode(issue.keyword, issue.params);
     const params = issue.params as { keys?: unknown };
 
     if (code === 'unrecognized_keys' && Array.isArray(params.keys)) {
