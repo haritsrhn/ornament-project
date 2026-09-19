@@ -17,19 +17,26 @@ const TABS = ["Umum", "Menu & Navigasi", "Permalink", "SEO", "Tema"];
 const META_DESCRIPTION =
   "Agen sourcing kerajinan Indonesia di Bantul, Yogyakarta. Menjembatani pengrajin lokal dengan pembeli global — QC empat titik, garansi 7 hari.";
 
+/* Didefinisikan di module scope, bukan di dalam AdminSettingsPage: komponen yang
+   dibuat ulang tiap render akan me-reset state-nya (react-hooks/static-components).
+   Markup yang dihasilkan sama persis seperti sebelumnya. */
+function SaveRow({ onSave }: { onSave: () => void }) {
+  return (
+    <div className="mt-1 flex justify-end gap-2">
+      <button type="button" className="btn btn-secondary">Batal</button>
+      <button type="button" className="btn btn-primary" onClick={onSave}>
+        Simpan perubahan
+      </button>
+    </div>
+  );
+}
+
 export default function AdminSettingsPage() {
   const toast = useToast();
   const [tab, setTab] = useState(TABS[0]);
   const [metaDescription, setMetaDescription] = useState(META_DESCRIPTION);
 
-  const SaveRow = () => (
-    <div className="mt-1 flex justify-end gap-2">
-      <button type="button" className="btn btn-secondary">Batal</button>
-      <button type="button" className="btn btn-primary" onClick={() => toast("Pengaturan disimpan.")}>
-        Simpan perubahan
-      </button>
-    </div>
-  );
+  const saveSettings = () => { toast("Pengaturan disimpan."); };
 
   return (
     <AdminScreen>
@@ -78,7 +85,7 @@ export default function AdminSettingsPage() {
                   defaultValue={COMPANY.addressLines.join(", ")}
                 />
               </Field>
-              <SaveRow />
+              <SaveRow onSave={saveSettings} />
             </Panel>
           ) : null}
 
@@ -114,7 +121,7 @@ export default function AdminSettingsPage() {
                 </select>
                 <button type="button" className="btn btn-secondary">Tambah item</button>
               </div>
-              <SaveRow />
+              <SaveRow onSave={saveSettings} />
             </Panel>
           ) : null}
 
@@ -152,7 +159,7 @@ export default function AdminSettingsPage() {
               <div className="rounded-[24px] bg-surface px-4.4 py-4 text-admin-sm text-muted-70">
                 Contoh URL: <code>{COMPANY.domain}/produk/bulan-pendant-lamp</code>
               </div>
-              <SaveRow />
+              <SaveRow onSave={saveSettings} />
             </Panel>
           ) : null}
 
@@ -209,7 +216,7 @@ export default function AdminSettingsPage() {
                   {metaDescription}
                 </div>
               </div>
-              <SaveRow />
+              <SaveRow onSave={saveSettings} />
             </Panel>
           ) : null}
 
@@ -264,7 +271,7 @@ export default function AdminSettingsPage() {
                 <Info size={17} strokeWidth={2.75} className="flex-none text-accent" aria-hidden />
                 Perubahan tema berlaku untuk seluruh halaman publik setelah disimpan.
               </div>
-              <SaveRow />
+              <SaveRow onSave={saveSettings} />
             </Panel>
           ) : null}
         </div>

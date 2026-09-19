@@ -7,10 +7,14 @@ import { COMPANY } from "@/lib/data";
 export function AdminBar() {
   return (
     <div className="flex h-[38px] items-center gap-5 overflow-x-auto whitespace-nowrap bg-neutral-900 px-4.4 text-[#f5ead8]">
+      {/* Situs publik adalah deployment terpisah dari admin (lihat frontend/README.md),
+          jadi dua tautan ini memang navigasi penuh, bukan client-side <Link>. */}
+      {/* eslint-disable-next-line @next/next/no-html-link-for-pages */}
       <a href="/" className="ad-barlink flex items-center gap-1.5">
         <Home size={14} strokeWidth={2.75} aria-hidden />
         {COMPANY.domain}
       </a>
+      {/* eslint-disable-next-line @next/next/no-html-link-for-pages */}
       <a href="/" className="ad-barlink">Lihat situs</a>
       <Link href="/admin/products/new" className="ad-barlink flex items-center gap-1.5">
         <Plus size={13} strokeWidth={2.75} aria-hidden />

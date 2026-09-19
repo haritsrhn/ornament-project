@@ -8,17 +8,22 @@ import { CommentSection } from "@/components/site/CommentSection";
 import { Shell } from "@/components/site/Section";
 import { ARTICLES } from "@/lib/data";
 
+/* Next 15+ : `params` halaman dinamis adalah Promise (lihat produk/[slug]). */
+type ArticlePageProps = { params: Promise<{ slug: string }> };
+
 export function generateStaticParams() {
   return ARTICLES.map((a) => ({ slug: a.slug }));
 }
 
-export function generateMetadata({ params }: { params: { slug: string } }): Metadata {
-  const article = ARTICLES.find((a) => a.slug === params.slug);
+export async function generateMetadata({ params }: ArticlePageProps): Promise<Metadata> {
+  const { slug } = await params;
+  const article = ARTICLES.find((a) => a.slug === slug);
   return { title: article?.title ?? "Artikel" };
 }
 
-export default function ArticlePage({ params }: { params: { slug: string } }) {
-  const article = ARTICLES.find((a) => a.slug === params.slug);
+export default async function ArticlePage({ params }: ArticlePageProps) {
+  const { slug } = await params;
+  const article = ARTICLES.find((a) => a.slug === slug);
   if (!article) notFound();
 
   const others = ARTICLES.filter((a) => a.slug !== article.slug).slice(0, 3);

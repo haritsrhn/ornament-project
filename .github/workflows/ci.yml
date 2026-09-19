@@ -63,8 +63,9 @@ jobs:
       - name: Typecheck
         run: npm run typecheck --workspace packages/shared --workspace backend
 
+      # Job ini hanya shared + backend; lint frontend dijalankan di job `frontend`.
       - name: Lint
-        run: npm run lint
+        run: npm run lint --workspace packages/shared --workspace backend
 
       - name: Format check
         run: npm run format:check
@@ -77,7 +78,7 @@ jobs:
         run: npm run build --workspace backend
 
   frontend:
-    name: Frontend (typecheck, build)
+    name: Frontend (typecheck, lint, build)
     runs-on: ubuntu-latest
     timeout-minutes: 15
 
@@ -98,6 +99,11 @@ jobs:
 
       - name: Typecheck
         run: npm run typecheck --workspace frontend
+
+      # `next lint` dihapus di Next 16; ESLint dipanggil langsung lewat
+      # frontend/eslint.config.js.
+      - name: Lint
+        run: npm run lint --workspace frontend
 
       - name: Build
         run: npm run build --workspace frontend

@@ -9,17 +9,23 @@ import { ProductCard } from "@/components/site/ProductCard";
 import { Shell } from "@/components/site/Section";
 import { ARTISANS, PRODUCTS, PRODUCT_SPEC, QC_POINTS } from "@/lib/data";
 
+/* Next 15+ : `params` halaman dinamis adalah Promise, jadi page dan
+   generateMetadata harus async dan meng-`await`-nya. */
+type ProductPageProps = { params: Promise<{ slug: string }> };
+
 export function generateStaticParams() {
   return PRODUCTS.map((p) => ({ slug: p.slug }));
 }
 
-export function generateMetadata({ params }: { params: { slug: string } }): Metadata {
-  const product = PRODUCTS.find((p) => p.slug === params.slug);
+export async function generateMetadata({ params }: ProductPageProps): Promise<Metadata> {
+  const { slug } = await params;
+  const product = PRODUCTS.find((p) => p.slug === slug);
   return { title: product?.name ?? "Produk" };
 }
 
-export default function ProductPage({ params }: { params: { slug: string } }) {
-  const product = PRODUCTS.find((p) => p.slug === params.slug);
+export default async function ProductPage({ params }: ProductPageProps) {
+  const { slug } = await params;
+  const product = PRODUCTS.find((p) => p.slug === slug);
   if (!product) notFound();
 
   const artisan = ARTISANS[0];
