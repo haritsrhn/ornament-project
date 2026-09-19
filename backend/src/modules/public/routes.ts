@@ -1,5 +1,5 @@
 /**
- * Rakitan rute `/v1/public/*` (kontrak §5.1–§5.2).
+ * Rakitan rute `/v1/public/*` (kontrak §5.1–§5.3 dan §5.5).
  *
  * Satu plugin agar guard publik (`registerPublicGuard`) terenkapsulasi bersama
  * rutenya: header `Cache-Control` dan flag `isTrustedInternalCaller` hanya
@@ -8,9 +8,11 @@
 
 import type { FastifyPluginAsyncZod } from 'fastify-type-provider-zod';
 
+import { publicArticlesRoutes } from './articles/routes.js';
 import { publicArtisansRoutes } from './artisans/routes.js';
 import { registerPublicGuard } from './guard.js';
 import { publicProductsRoutes } from './products/routes.js';
+import { publicSiteRoutes } from './site/routes.js';
 
 export interface PublicRoutesOptions {
   /** Basis URL publik R2 untuk `PublicMedia.url` (ADR K3). */
@@ -27,4 +29,6 @@ export const publicRoutes: FastifyPluginAsyncZod<PublicRoutesOptions> = async (a
 
   await app.register(publicProductsRoutes, mediaOption);
   await app.register(publicArtisansRoutes, mediaOption);
+  await app.register(publicArticlesRoutes, mediaOption);
+  await app.register(publicSiteRoutes, mediaOption);
 };

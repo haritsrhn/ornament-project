@@ -46,6 +46,8 @@ src/
   modules/public/media.ts        DTO PublicMedia (URL R2; Media PRIVATE tidak pernah dirujuk)
   modules/public/products/       katalog publik: query keyset, pohon kategori, DTO, rute
   modules/public/artisans/       pengrajin publik: DTO whitelist + rute
+  modules/public/articles/       journal publik: aturan "terbit" (ADR K8), keyset, blok isi, komentar
+  modules/public/site/           situs publik: settings, menu, halaman & blok, sitemap, redirect
   plugins/prisma.ts    registerPrisma() — decorate app.prisma + $disconnect saat onClose
   plugins/validation.ts  validator/serializer Zod, locale pesan Indonesia, hanya body JSON
   plugins/error-handler.ts  setErrorHandler + setNotFoundHandler → envelope error kontrak §1.5
@@ -71,6 +73,7 @@ test/
   helpers/app.ts       buildTestApp() — app dengan logger mati, ditutup otomatis di akhir tes
   helpers/database.ts  resolveTestDatabaseUrl() + createTestPrisma() — hanya DB `*_test`
   helpers/catalog.ts   fixture kategori/material/pengrajin/produk untuk tes /v1/public/*
+  helpers/journal.ts   fixture artikel/komentar/halaman/blok/menu/redirect untuk tes /v1/public/*
   helpers/auth.ts      fixture pengguna, pembaca Set-Cookie, dan pembaca respons bertipe
 vitest.config.ts       project Vitest `unit` dan `integration`
 docker/postgres-init/  skrip init container Postgres (membuat ornament_test)
@@ -159,6 +162,8 @@ npx prisma migrate status
 | --- | --- |
 | `…_model_domain_awal` | Seluruh model domain + blok SQL manual di bawah |
 | `…_invite_email_sent_at` | `invite.email_sent_at` (nullable) untuk `AdminInvite.emailSentAt` kontrak §5.13; model domain §3.1 hanya menyebut `email_message_id`/`email_error`, yang tidak bisa menjawab "kapan terkirim". Baris lama otomatis berarti "belum/gagal terkirim" |
+| `…_indeks_keyset_katalog_publik` | Indeks `product(publish_status, deleted_at, published_at DESC, id DESC)` untuk keyset katalog publik (§1.6/§5.1) |
+| `…_indeks_keyset_artikel_publik` | Dua indeks **ekspresi parsial** pada `article` untuk keyset journal publik (§1.6/§5.3); lihat §Constraint SQL manual |
 
 Reset database lokal (dev saja — **menghapus semua data**):
 
@@ -194,6 +199,7 @@ itu** saat membuat migrasi berikutnya.
 | `site_setting_low_stock_threshold_check` | `low_stock_threshold >= 0` | §3.8 (Q13) |
 | `slug_redirect_target_check` | Tepat satu dari `product_id`/`article_id`, sesuai `type` | §3.8, §6.10 |
 | `product_sku_seq` | Sequence global untuk saran SKU `ORN-<kode>-<NNNN>`; nomor tidak pernah dipakai ulang | §6.2 |
+| `article_public_effective_at_idx`, `article_public_category_effective_at_idx` | Indeks ekspresi parsial `COALESCE(published_at, publish_at) DESC, id DESC` (opsional per `category_id`) `WHERE deleted_at IS NULL AND status <> 'DRAFT'`, untuk keyset journal publik. Ekspresi dan predikat parsial tidak bisa ditulis di `schema.prisma`; ada di migrasi `…_indeks_keyset_artikel_publik` | kontrak §1.6/§5.3, ADR K8 |
 
 Aturan lain yang **sengaja tetap di lapisan API** (tidak bisa/tidak layak jadi
 constraint DB): syarat publish produk & artikel, "tepat satu material primer saat
@@ -747,8 +753,9 @@ server (`AppError`, `ERROR_STATUS`, `ok()`, error handler) dan tipe Prisma.
 ## API baca publik (`/v1/public/*`)
 
 Sumber: kontrak [`docs/api-contract.md`](docs/api-contract.md) §5.1 (produk,
-kategori, material) dan §5.2 (pengrajin), dengan aturan privasi §4 dan konvensi
-§1. Kode: `src/modules/public/`.
+kategori, material), §5.2 (pengrajin), §5.3 (artikel & komentar), dan §5.5
+(settings, menu, halaman, sitemap, redirect), dengan aturan privasi §4 dan
+konvensi §1. Kode: `src/modules/public/`.
 
 Pemanggil utamanya adalah server Next situs publik (server-to-server), tetapi
 GET **tidak** butuh auth (ADR A9): ia dilindungi rate limit dan dirancang untuk
@@ -764,26 +771,70 @@ di-cache di edge.
 | `GET /v1/public/materials` | `withEmpty` | Urut `name`, dengan `productCount` |
 | `GET /v1/public/artisans` | `regency` (tanpa memandang besar-kecil huruf), `limit`, `cursor` | `{ data: PublicArtisanCard[], meta }` — hanya `ACTIVE`/`FULL_CAPACITY` yang tidak diarsipkan |
 | `GET /v1/public/artisans/:slug` | — | `{ data: PublicArtisanDetail }` — profil + maks 12 produk terbaru miliknya |
+| `GET /v1/public/article-categories` | `withEmpty` | Urut `position`, dengan `articleCount` (artikel terbit) |
+| `GET /v1/public/articles` | `category` (slug `ArticleCategory`), `tag`, `limit`, `cursor` | `{ data: PublicArticleCard[], meta }` — urut `-publishedAt` (terjadwal: `publishAt`) |
+| `GET /v1/public/articles/:slug` | — | `{ data: PublicArticleDetail }` — blok isi, tag, gambar unggulan, penulis hanya `name` |
+| `GET /v1/public/articles/:slug/comments` | `limit` (default 20), `cursor` | `{ data: PublicComment[], meta }` — komentar akar `APPROVED` urut `createdAt` naik, balasan bersarang 1 tingkat |
+| `GET /v1/public/settings` | — | `{ data: PublicSiteSetting }` — nama, tagline, kontak, alamat, sosial, SEO, `sitemapEnabled`, `allowIndexing` |
+| `GET /v1/public/nav-items` | — | Menu satu tingkat urut `position`, dengan `href` turunan |
+| `GET /v1/public/pages` | `path` (wajib, diawali `/`) | `{ data: PublicPage }` — blok `ACTIVE` halaman, lalu blok `GLOBAL` |
+| `GET /v1/public/blocks/global` | — | Blok global saja, untuk layout tanpa `Page` (mis. `/produk/[slug]`) |
+| `GET /v1/public/sitemap` | — | `{ enabled, entries: [{ path, updatedAt }] }` — halaman, produk, artikel, pengrajin yang tayang |
+| `GET /v1/public/redirects` | `type` (`PRODUCT`\|`ARTICLE`), `slug` (slug lama) | `{ data: PublicRedirect }` — `301` ke slug terkini (§6.10) |
 
 Slug filter yang tidak dikenal menjawab `200` dengan `data: []` (bukan `404`),
 supaya URL filter lama tidak error. Produk draf/di Trash dan pengrajin
 `VERIFICATION`/diarsipkan menjawab `404` di endpoint detailnya.
 
-Belum ada di sini (menyusul di tahap berikutnya, lihat kontrak): artikel &
-komentar (§5.3), inquiry (§5.4), serta settings/menu/halaman/sitemap/redirect
-slug (§5.5).
+Belum ada di sini (menyusul di tahap berikutnya, lihat kontrak): seluruh
+endpoint **tulis** publik — submit inquiry dan lampirannya (§5.4) serta
+`POST /v1/public/articles/:slug/comments` (§5.3).
+
+Kontrak tidak mendefinisikan endpoint `robots`: kebijakan indeks dikirim lewat
+`SiteSetting.allowIndexing` di `/settings`, dan `robots.txt` dirender Next.
+
+### Artikel "terbit" (ADR K8)
+
+Query publik menganggap artikel terbit bila `deletedAt IS NULL` **dan**
+(`status = PUBLISHED` **atau** `status = SCHEDULED AND publishAt <= now()`) —
+model §6.6. Karena tanggal tayangnya karena itu bukan satu kolom, daftar journal
+diurutkan `COALESCE(published_at, publish_at) DESC, id DESC`, dan
+`PublicArticleCard.publishedAt` memakai `publishAt` untuk artikel terjadwal yang
+sudah jatuh tempo. Definisi tunggalnya ada di
+`src/modules/public/articles/query.ts` dan dipakai ulang oleh detail, komentar,
+hitungan kategori, sitemap, dan resolusi redirect.
+
+Artikel tanpa kategori juga disembunyikan: kategori wajib saat publish (§6.6)
+dan `PublicArticleCard.category` tidak nullable, jadi baris yang rusak
+disembunyikan alih-alih dikirim setengah jadi.
+
+### Blok isi artikel
+
+`Article.content` tidak lagi sekadar "JSON valid": skema `ArticleBlock`
+(`packages/shared/src/articles.ts`, model §3.6) mengunci empat bentuk blok —
+`paragraph`, `heading2`, `quote`, `image`. Saat membaca, blok yang tidak cocok
+**dibuang** dan dicatat di log (`dropped`), bukan menjatuhkan halaman journal.
+Blok `image` menukar `mediaId` dengan `PublicMedia`; blok yang medianya hilang
+atau `PRIVATE` ikut dibuang, sama seperti galeri produk.
+
+`excerpt` DTO publik selalu terisi: bila kolomnya kosong ia diturunkan dari
+paragraf pertama, maks 200 karakter.
 
 ### Privasi DTO (kontrak §4)
 
-DTO publik ditulis sebagai **whitelist eksplisit** di `packages/shared/src/products.ts`
-dan `artisans.ts`, bukan hasil `omit` dari model, dan `select` Prisma di
+DTO publik ditulis sebagai **whitelist eksplisit** di `packages/shared/src/products.ts`,
+`artisans.ts`, `articles.ts`, dan `site.ts`, bukan hasil `omit` dari model, dan `select` Prisma di
 `src/modules/public/**/dto.ts` hanya mengambil kolom yang memang dikirim. Jadi
 kolom seperti `stockNote`, `stockStatusOverride`, `lowStockThreshold`,
 `ProductQcCheck.notes`, `revision`, `publishStatus`, `deletedAt`, `phone`,
-`address`, `contactName`, `internalNotes`, dan `ArtisanDocument` tidak punya
-jalur ke respons publik — juga bila kolom baru ditambahkan ke Prisma nanti.
-Tes kontraknya ada di `test/integration/public-products.test.ts` dan
-`public-artisans.test.ts`.
+`address`, `contactName`, `internalNotes`, `ArtisanDocument`,
+`Comment.authorEmail`/`ipHash`/`userAgent`/`authorUserId`/`status`,
+`User.email` (penulis hanya `name`), `SiteSetting.lowStockThreshold`,
+`Page.systemKey`, dan `NavItem.pageId`/`categoryId` tidak punya jalur ke respons
+publik — juga bila kolom baru ditambahkan ke Prisma nanti. Tes kontraknya ada di
+`test/integration/public-products.test.ts`, `public-artisans.test.ts`,
+`public-articles.test.ts`, dan `public-site.test.ts`, yang menanam nilai penanda
+di kolom privat lalu membuktikan nol kemunculannya di body respons.
 
 Pengrajin yang diarsipkan atau berstatus `VERIFICATION` (model §6.7/A10):
 produknya **tetap** tayang, tetapi di detail produk pengrajinnya muncul dengan
@@ -823,7 +874,19 @@ sort, sidik jari filter, nilai kolom sort, dan `id` baris terakhir
 dipakai dengan filter/sort berbeda ditolak `400 INVALID_CURSOR`.
 
 Indeks `product(publish_status, deleted_at, published_at DESC, id DESC)`
-(migrasi `20260919034034_indeks_keyset_katalog_publik`) melayani urutan itu.
+(migrasi `20260919034034_indeks_keyset_katalog_publik`) melayani urutan katalog.
+Untuk journal, urutannya adalah ekspresi `COALESCE(published_at, publish_at)`,
+yang tidak bisa diurutkan `orderBy` Prisma: rutenya memakai satu query SQL
+mentah yang hanya mengembalikan `id` (urut + keyset), lalu barisnya diambil
+ulang lewat `select` whitelist Prisma — tidak ada kolom artikel yang pernah
+lolos tanpa melewati whitelist. Indeks ekspresi parsialnya ada di migrasi
+`20260919120000_indeks_keyset_artikel_publik`.
+
+Komentar memakai keyset naik (`createdAt ASC, id ASC`, default `limit` 20) dan
+dilayani indeks `comment(article_id, status, created_at)` yang sudah ada.
+`meta.total` komentar menghitung komentar **akar** yang cocok filter; angka
+"Diskusi (n)" di UI memakai `commentCount` pada DTO artikel, yang menghitung
+balasan juga (model §6.8).
 
 ## Script
 

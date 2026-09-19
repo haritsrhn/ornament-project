@@ -29,3 +29,47 @@ export type ArtisanStatus = z.infer<typeof artisanStatusSchema>;
 export const PUBLIC_ARTISAN_STATUSES = ['ACTIVE', 'FULL_CAPACITY'] as const;
 export const publicArtisanStatusSchema = z.enum(PUBLIC_ARTISAN_STATUSES);
 export type PublicArtisanStatus = z.infer<typeof publicArtisanStatusSchema>;
+
+export const ARTICLE_STATUSES = ['DRAFT', 'SCHEDULED', 'PUBLISHED'] as const;
+export const articleStatusSchema = z.enum(ARTICLE_STATUSES);
+export type ArticleStatus = z.infer<typeof articleStatusSchema>;
+
+/**
+ * Status artikel yang dianggap **terbit** oleh query publik (ADR K8, model
+ * §6.6): `PUBLISHED`, atau `SCHEDULED` yang `publishAt`-nya sudah lewat.
+ * `DRAFT` tidak pernah tampil, dan `SCHEDULED` yang belum jatuh tempo → `404`.
+ */
+export const PUBLIC_ARTICLE_STATUSES = ['PUBLISHED', 'SCHEDULED'] as const;
+
+export const SITE_LANGUAGES = ['ID', 'EN', 'BILINGUAL'] as const;
+export const siteLanguageSchema = z.enum(SITE_LANGUAGES);
+export type SiteLanguage = z.infer<typeof siteLanguageSchema>;
+
+export const BLOCK_TYPES = [
+  'HERO',
+  'STORY',
+  'PRODUCT_PREVIEW',
+  'PROCESS',
+  'TERMS',
+  'FOOTER',
+  'TESTIMONIAL',
+  'RICH_TEXT',
+] as const;
+export const blockTypeSchema = z.enum(BLOCK_TYPES);
+export type BlockType = z.infer<typeof blockTypeSchema>;
+
+export const BLOCK_LAYOUTS = ['LEFT', 'CENTER', 'BLEED'] as const;
+export const blockLayoutSchema = z.enum(BLOCK_LAYOUTS);
+export type BlockLayout = z.infer<typeof blockLayoutSchema>;
+
+export const NAV_ITEM_TYPES = ['PAGE', 'CATEGORY', 'ARTICLE_ARCHIVE', 'CUSTOM_LINK'] as const;
+export const navItemTypeSchema = z.enum(NAV_ITEM_TYPES);
+export type NavItemType = z.infer<typeof navItemTypeSchema>;
+
+export const NAV_ITEM_STYLES = ['LINK', 'BUTTON'] as const;
+export const navItemStyleSchema = z.enum(NAV_ITEM_STYLES);
+export type NavItemStyle = z.infer<typeof navItemStyleSchema>;
+
+export const SLUG_REDIRECT_TYPES = ['PRODUCT', 'ARTICLE'] as const;
+export const slugRedirectTypeSchema = z.enum(SLUG_REDIRECT_TYPES);
+export type SlugRedirectType = z.infer<typeof slugRedirectTypeSchema>;
