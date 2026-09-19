@@ -9,6 +9,8 @@ import { registerAuthGuard } from './modules/auth/guard.js';
 import type { LoginThrottle, PasswordChangeThrottle } from './modules/auth/login-throttle.js';
 import { authRoutes } from './modules/auth/routes.js';
 import { invitesRoutes } from './modules/invites/routes.js';
+import { enforcePublicRouteConfig } from './modules/public/guard.js';
+import { publicRoutes } from './modules/public/routes.js';
 import { usersRoutes } from './modules/users/routes.js';
 import { registerAdminOrigin } from './plugins/admin-origin.js';
 import { registerErrorHandling } from './plugins/error-handler.js';
@@ -57,6 +59,12 @@ export interface BuildAppOptions {
    * ditandai "belum terkirim" alih-alih berpura-pura sukses.
    */
   emailSender?: EmailSender;
+  /**
+   * `X-Internal-Key` yang dianggap berasal dari server Next (kontrak §1.2).
+   * Default `config.INTERNAL_API_KEY`; dipisah agar tes bisa mengatur key tanpa
+   * membangun seluruh `Env`.
+   */
+  internalApiKey?: string | undefined;
 }
 
 /**
@@ -108,6 +116,9 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
   });
 
   registerAdminOrigin(app, { adminOrigin: options.adminOrigin ?? config?.ADMIN_ORIGIN });
+  // Cerminan penanda `adminAccess`: rute `/v1/public/*` wajib menyatakan
+  // `publicAccess` + `rateLimit` (lihat `modules/public/guard.ts`).
+  enforcePublicRouteConfig(app);
 
   if (options.prisma) {
     registerPrisma(app, { client: options.prisma });
@@ -133,6 +144,15 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
   void app.register(invitesRoutes, {
     prefix: '/v1',
     ...(options.emailSender === undefined ? {} : { emailSender: options.emailSender }),
+  });
+  void app.register(publicRoutes, {
+    prefix: '/v1',
+    ...mediaPublicUrl,
+    ...(options.internalApiKey === undefined
+      ? config?.INTERNAL_API_KEY === undefined
+        ? {}
+        : { internalApiKey: config.INTERNAL_API_KEY }
+      : { internalApiKey: options.internalApiKey }),
   });
 
   return app;

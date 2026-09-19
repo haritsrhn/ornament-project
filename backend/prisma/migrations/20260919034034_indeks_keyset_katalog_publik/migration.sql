@@ -1,0 +1,14 @@
+-- Pagination keyset katalog publik (kontrak API §1.6, endpoint §5.1).
+--
+-- `GET /v1/public/products` menyaring produk terbit (`publish_status`,
+-- `deleted_at`) lalu mengurutkannya `published_at DESC, id DESC` — urutan yang
+-- juga menjadi kunci kursornya. Indeks lama
+-- `(publish_status, deleted_at, category_id)` melayani filternya saja, sehingga
+-- setiap halaman harus menyortir ulang seluruh produk terbit. Indeks ini
+-- menyediakan urutannya sekaligus, jadi baik halaman pertama maupun lanjutan
+-- cukup membaca sebagian indeks.
+--
+-- Hanya menambah indeks: tidak ada kolom/tabel yang berubah, dan migrasi lama
+-- tidak disentuh.
+-- CreateIndex
+CREATE INDEX "product_publish_status_deleted_at_published_at_id_idx" ON "product"("publish_status", "deleted_at", "published_at" DESC, "id" DESC);

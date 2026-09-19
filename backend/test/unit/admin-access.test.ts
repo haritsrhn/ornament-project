@@ -110,7 +110,10 @@ describe('penanda izin rute admin', () => {
 
   test('rute non-admin tidak butuh penanda', async () => {
     const app = buildApp({ logger: false });
-    app.get('/v1/public/apa-saja', () => ({ data: null }));
+    // Sengaja bukan `/v1/public/*`: rute publik punya penanda wajibnya sendiri
+    // (`config.publicAccess`, lihat `test/unit/public-access.test.ts`), jadi
+    // memakainya di sini akan menguji hal yang berbeda.
+    app.get('/v1/apa-saja', () => ({ data: null }));
     await expect(app.ready()).resolves.toBeDefined();
     await app.close();
   });
