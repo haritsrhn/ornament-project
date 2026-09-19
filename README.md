@@ -9,7 +9,7 @@ package-lock.json          satu lockfile untuk semua workspace
 .nvmrc                     Node 24
 packages/shared/           @ornament/shared — skema Zod & tipe kontrak API (lihat README-nya)
 backend/                   Fastify API + TypeScript + Prisma — lihat backend/README.md
-frontend/                  Next.js (App Router) + TypeScript + Tailwind
+frontend/                  Next.js 16 (App Router) + React 19 + TypeScript + Tailwind 3
 docker-compose.yml         PostgreSQL lokal (dev + test) untuk backend
 design_handoff_ornament/   Referensi desain (tidak di-track git)
 ```
@@ -34,7 +34,7 @@ npm run dev:shared     # tsc --watch untuk packages/shared (tipe dist/ untuk fro
 npm run build          # build semua workspace (shared → backend → frontend)
 npm run build:shared   # build @ornament/shared saja (juga otomatis saat npm install)
 npm run typecheck      # build shared, lalu typecheck semua workspace
-npm run lint           # lint shared + backend
+npm run lint           # lint semua workspace (shared, backend, frontend)
 npm run format         # Prettier shared + backend (format:check untuk cek saja)
 npm test               # tes shared + backend (unit + integration; butuh db:up)
 npm run db:up          # PostgreSQL lokal via Docker (tunggu healthy)
@@ -43,6 +43,20 @@ npm run db:down        # matikan PostgreSQL lokal
 ```
 
 Script per workspace: `npm run <script> --workspace frontend|backend|packages/shared`.
+
+### Dedupe React & ESLint (`overrides`)
+
+Satu `node_modules` dipakai bertiga. Tanpa `overrides` di root, npm memasang
+`react`/`react-dom`/`@types/react` **18** di root (peer transitif dari
+`prisma studio`/Radix/visx) sementara frontend memakai **19** — dua salinan React
+sekaligus, yang membuat `tsc` menolak `Context.Provider` dan membuat Next
+me-resolve React yang salah. Semua paket yang meminta React juga menerima `^19`,
+jadi override aman. `eslint` disamakan ke 10 karena plugin bawaan
+`eslint-config-next` masih mendeklarasikan peer `<=9`.
+
+Konsekuensi: setelah mengubah `overrides`, npm perlu `node_modules` yang bersih
+(`rm -rf node_modules */node_modules package-lock.json && npm install`) — pada
+`npm install` biasa, override tidak diterapkan ke peer yang sudah terpasang.
 
 ## Paket bersama
 
@@ -78,10 +92,11 @@ GitHub Actions (`.github/workflows/ci.yml`) berjalan pada setiap pull request
 dibatalkan otomatis. Dua job paralel, Node dari `.nvmrc`:
 
 - **backend** (+ shared) — `npm ci`, generate Prisma Client, build shared,
-  typecheck, lint, cek Prettier (shared + backend), tes shared lalu tes unit +
-  integrasi backend terhadap service container `postgres:18-alpine` (database
-  `ornament_test`), lalu build.
-- **frontend** — `npm ci`, build shared, typecheck, build Next.js.
+  typecheck, lint (shared + backend), cek Prettier (shared + backend), tes shared
+  lalu tes unit + integrasi backend terhadap service container
+  `postgres:18-alpine` (database `ornament_test`), lalu build.
+- **frontend** — `npm ci`, build shared, typecheck, lint (ESLint flat config;
+  `next lint` dihapus di Next 16), build Next.js.
 
 Jalankan langkah yang sama secara lokal sebelum membuka PR:
 

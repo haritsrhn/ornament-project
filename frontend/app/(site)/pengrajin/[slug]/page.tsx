@@ -8,17 +8,22 @@ import { ProductCard } from "@/components/site/ProductCard";
 import { Section, Shell } from "@/components/site/Section";
 import { ARTISANS, PRODUCTS } from "@/lib/data";
 
+/* Next 15+ : `params` halaman dinamis adalah Promise (lihat produk/[slug]). */
+type ArtisanPageProps = { params: Promise<{ slug: string }> };
+
 export function generateStaticParams() {
   return ARTISANS.map((a) => ({ slug: a.slug }));
 }
 
-export function generateMetadata({ params }: { params: { slug: string } }): Metadata {
-  const artisan = ARTISANS.find((a) => a.slug === params.slug);
+export async function generateMetadata({ params }: ArtisanPageProps): Promise<Metadata> {
+  const { slug } = await params;
+  const artisan = ARTISANS.find((a) => a.slug === slug);
   return { title: artisan?.name ?? "Pengrajin" };
 }
 
-export default function ArtisanPage({ params }: { params: { slug: string } }) {
-  const artisan = ARTISANS.find((a) => a.slug === params.slug);
+export default async function ArtisanPage({ params }: ArtisanPageProps) {
+  const { slug } = await params;
+  const artisan = ARTISANS.find((a) => a.slug === slug);
   if (!artisan) notFound();
 
   const products = PRODUCTS.slice(0, 3);

@@ -1,7 +1,8 @@
 # Ornament Sourcing Agent — Static UI
 
-Next.js (App Router) + TypeScript + Tailwind implementation of the
-`design_handoff_ornament/` package: the public landing site and the admin CMS.
+Next.js 16 (App Router) + React 19 + TypeScript + Tailwind 3 implementation of
+the `design_handoff_ornament/` package: the public landing site and the admin
+CMS.
 
 **Scope of this phase: static UI markup and basic front-end interaction state
 only.** There is no backend, no Prisma, no database, and no authentication.
@@ -9,11 +10,60 @@ Every list renders from `lib/data.ts`, and every "save" is local component state
 plus a toast.
 
 ```bash
-npm install
+npm install      # dari root repo, bukan dari folder ini
 npm run dev      # http://localhost:3000
 npm run build
 npm run typecheck
+npm run lint
 ```
+
+## Versi
+
+| Paket | Versi |
+| --- | --- |
+| `next` | 16.3.5 |
+| `react` / `react-dom` | 19.3.x |
+| `tailwindcss` | 3.4.x |
+| `postcss` / `autoprefixer` | 8.5.x / 10.4.x |
+| `lucide-react` | 0.577.x |
+| `eslint` | 10.x |
+
+## Lint
+
+Next 16 menghapus perintah `next lint`, jadi ESLint dipanggil langsung:
+
+```bash
+npm run lint --workspace frontend      # sama dengan: eslint .
+```
+
+Konfigurasinya ada di [`eslint.config.js`](eslint.config.js) (flat config,
+CommonJS karena paket ini bukan ESM): `eslint-config-next/core-web-vitals` +
+`eslint-config-next/typescript` + `eslint-config-prettier` di akhir supaya tidak
+bentrok dengan Prettier. `npm run lint` di root sekarang mencakup workspace ini,
+dan job `frontend` di CI menjalankannya.
+
+Dua pengecualian yang dimatikan beserta alasannya:
+
+- `@next/next/no-html-link-for-pages` di `components/admin/AdminBar.tsx` — dua
+  tautan "lihat situs" memang navigasi penuh, karena situs publik adalah
+  deployment terpisah dari admin.
+- `@typescript-eslint/no-require-imports` di file config CommonJS
+  (`eslint.config.js`, `postcss.config.mjs`).
+
+## Catatan Next 16 / React 19
+
+- `params` pada route dinamis (`produk/[slug]`, `journal/[slug]`,
+  `pengrajin/[slug]`) sekarang **Promise**, jadi page dan `generateMetadata`-nya
+  `async` dan meng-`await` `params`. `generateStaticParams` tidak berubah.
+- `useRef` di React 19 wajib punya argumen awal
+  (`useRef<T | undefined>(undefined)`).
+- Komponen tidak boleh dibuat di dalam render (aturan
+  `react-hooks/static-components`); `SaveRow` di `app/admin/settings/page.tsx`
+  dipindah ke module scope dengan prop `onSave` — markup-nya identik.
+- `tsconfig.json` memakai `"jsx": "react-jsx"` (wajib Next 16) dan menambah
+  `.next/dev/types/**/*.ts` ke `include`.
+- Belum ada pemanggilan `fetch` di frontend, jadi perubahan default cache Next 15
+  (`fetch` tidak lagi di-cache otomatis) tidak berpengaruh pada kode saat ini.
 
 ## Phase 1 — Design system
 

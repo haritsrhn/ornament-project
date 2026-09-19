@@ -14,7 +14,8 @@ export function useToast() {
 
 export function ToastProvider({ children }: { children: React.ReactNode }) {
   const [message, setMessage] = useState("");
-  const timer = useRef<ReturnType<typeof setTimeout>>();
+  // React 19: useRef wajib punya argumen awal (tidak ada lagi overload 0-argumen).
+  const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
 
   const toast = useCallback((next: string) => {
     setMessage(next);
