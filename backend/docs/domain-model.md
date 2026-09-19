@@ -320,6 +320,7 @@ Kolom "Konten" di UI diturunkan saat query (jumlah artikel/produk/revisi).
 | invitedById | Uuid → User | ✓ | | Restrict |
 | acceptedAt | DateTime | | | Saat diterima, `User` dibuat dalam transaksi yang sama. |
 | revokedAt | DateTime | | | |
+| emailSentAt | DateTime | | | Waktu email undangan berhasil dikirim; `null` bila belum/gagal (kontrak §5.13). Ditambahkan oleh migrasi `20260918090000_invite_email_sent_at`. |
 | emailMessageId / emailError | String | | | Hasil kirim Resend (ADR K4). |
 
 Undangan yang tertunda tampil di tabel Users sebagai baris "Belum masuk".

@@ -327,7 +327,7 @@ bukan hasil `omit` dari model. Tes kontrak wajib memastikan field di kolom kanan
 | Product | `id, slug, name, sku, excerpt, description, category, materials (name/slug/isPrimary), tags, moqQuantity, moqUnit, leadTimeDays, lengthCm, widthCm, heightCm, weightKg, fobPriceUsd, fobPort (Q7), stockStatus (efektif), stockQuantity, primaryImage, images, specs, qcChecks (stage, status, criteria), artisan (ringkas), origin, publishedAt` | 🔒 `stockNote`, 🔒 `stockStatusOverride`, 🔒 `lowStockThreshold`, `qcChecks[].notes` 🔒, `qcChecks[].checkedBy/checkedAt`, `ProductRevision` 🔒, `SlugRedirect`, `revision`, `publishStatus`, `duplicatedFromId`, `createdById/updatedById`, `deletedAt`, `updatedAt`. Produk `DRAFT`/di Trash → `404`. |
 | Artisan | `id, slug, name, village, regency, province, partnerSinceYear, craftsmenCount, monthlyCapacity, capacityUnit, avgLeadTimeDays, skills, summary, story, status (ACTIVE/FULL_CAPACITY), photo, images (caption), publishedProductCount` | 🔒 `contactName`, 🔒 `phone`, 🔒 `address`, 🔒 `internalNotes`, 🔒 `ArtisanDocument` (seluruhnya, termasuk dokumen identitas), Media `PRIVATE`, `archivedAt` (Q14). Artisan `VERIFICATION`/diarsipkan → `404` di `/public/artisans/:slug`; di dalam produk tampil ringkas tanpa tautan (`slug: null`, A10, model §6.7). |
 | Article | `id, slug, title, excerpt, content, category ({ slug, name }), tags, featuredImage, author: { name }, publishedAt, commentCount` | `author.email`, `authorId`, `categoryId`, `status`, `publishAt` (terjadwal yang belum jatuh tempo → `404`), `wordCount`, `deletedAt`. |
-| ArticleCategory | `slug, name, description, position, articleCount` | `id`. |
+| ArticleCategory | `id, slug, name, description, position, articleCount` | — (konsisten dengan `Category`/`Material` publik, yang `id`-nya dipakai `PublicInquiryInput`). |
 | Comment | `id, authorName, body, createdAt, isStaffReply, replies[]` | 🔒 `authorEmail` (termasuk turunannya, mis. hash Gravatar — Q9), 🔒 `ipHash`, 🔒 `userAgent`, `authorUserId`, `moderatedById/At`, `status`, `anonymizedAt`. Hanya `APPROVED`. |
 | Inquiry | Respons submit: `{ reference }` saja | 🔒 Seluruh isi `Inquiry`, `InquiryReply`, `InquiryAttachment` — tidak ada endpoint baca publik. |
 | Media | `url, alt, width, height` | `id` media internal, `key`, `fileName`, `sizeBytes`, `uploadedById`, `visibility`. Media `PRIVATE` **tidak pernah** dirujuk (validasi saat simpan menolak Media `PRIVATE` di konten publik). |
@@ -367,7 +367,7 @@ Aksi massal selalu `200` dengan `BulkResult` (sukses parsial diizinkan; tidak me
 | `GET /v1/public/materials` | `withEmpty?: bool` | `200 { data: PublicMaterial[] }` urut `name` | — |
 
 ```ts
-PublicProductCard = { id; slug; name; sku; excerpt: string|null; primaryImage: PublicMedia|null;
+PublicProductCard = { id; slug; name; sku: string|null; excerpt: string|null; primaryImage: PublicMedia|null;
   category: { slug; name }; primaryMaterial: { slug; name } | null; origin: string|null; // "Bangunjiwo, Bantul"
   stockStatus: StockStatus; moqQuantity: int; moqUnit: string; publishedAt: iso }
 
@@ -423,7 +423,7 @@ GET /v1/public/products?category=furniture&material=rotan-alami,rangka-besi&limi
 
 | Method & path | Query | Respons | Error |
 | --- | --- | --- | --- |
-| `GET /v1/public/artisans` | `regency?`, `limit?`, `cursor?` | `200 { data: PublicArtisanCard[], meta: CursorMeta }` hanya `ACTIVE`/`FULL_CAPACITY`, tidak diarsipkan | — |
+| `GET /v1/public/artisans` | `regency?`, `limit?`, `cursor?` | `200 { data: PublicArtisanCard[], meta: CursorMeta(total) }` hanya `ACTIVE`/`FULL_CAPACITY`, tidak diarsipkan | — |
 | `GET /v1/public/artisans/:slug` | — | `200 { data: PublicArtisanDetail }` | `404` (`VERIFICATION`, diarsipkan, tidak ada) |
 
 ```ts
