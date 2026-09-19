@@ -612,6 +612,11 @@ model Product {
   @@index([deletedAt])
   /// Katalog publik (§3.5).
   @@index([publishStatus, deletedAt, categoryId])
+  /// Pagination keyset katalog publik (kontrak §1.6): daftar `/v1/public/products`
+  /// menyaring `publishStatus`/`deletedAt` lalu mengurutkan `publishedAt DESC, id DESC`.
+  /// Indeks di atas melayani filternya, tetapi tidak urutannya — tanpa indeks ini
+  /// setiap halaman menyortir ulang seluruh produk terbit.
+  @@index([publishStatus, deletedAt, publishedAt(sort: Desc), id(sort: Desc)])
   @@index([primaryImageId])
   @@index([duplicatedFromId])
   @@index([createdById])

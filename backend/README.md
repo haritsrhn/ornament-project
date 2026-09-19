@@ -35,12 +35,17 @@ src/
   lib/errors.ts        AppError + ERROR_STATUS (status HTTP per ErrorCode §1.10) + helper (notFound(), …)
   lib/http.ts          ok() — membungkus data ke envelope sukses (kontrak §1.4)
   lib/password.ts      hashPassword()/verifyPassword()/needsRehash() — argon2id (ADR K7)
+  lib/cursor.ts        kursor keyset daftar publik (kontrak §1.6) + sidik jari filter
   modules/auth/session.ts        service sesi: token 32 byte, SHA-256 di DB, sliding refresh
   modules/auth/cookie.ts         atribut cookie __Host-osa_session di satu tempat
   modules/auth/guard.ts          app.requireSession / app.requireRole(...)
   modules/auth/login-throttle.ts lockout login per email (in-memory)
   modules/auth/me.ts             DTO Me + permissions turunan peran (kontrak §2.2/§3.3)
   modules/auth/routes.ts         POST login, POST logout, GET me
+  modules/public/guard.ts        penanda publicAccess + Cache-Control + rate limit /v1/public/*
+  modules/public/media.ts        DTO PublicMedia (URL R2; Media PRIVATE tidak pernah dirujuk)
+  modules/public/products/       katalog publik: query keyset, pohon kategori, DTO, rute
+  modules/public/artisans/       pengrajin publik: DTO whitelist + rute
   plugins/prisma.ts    registerPrisma() — decorate app.prisma + $disconnect saat onClose
   plugins/validation.ts  validator/serializer Zod, locale pesan Indonesia, hanya body JSON
   plugins/error-handler.ts  setErrorHandler + setNotFoundHandler → envelope error kontrak §1.5
@@ -65,6 +70,7 @@ test/
                        seed.test.ts menjalankan seed ke DB tes lalu membersihkannya
   helpers/app.ts       buildTestApp() — app dengan logger mati, ditutup otomatis di akhir tes
   helpers/database.ts  resolveTestDatabaseUrl() + createTestPrisma() — hanya DB `*_test`
+  helpers/catalog.ts   fixture kategori/material/pengrajin/produk untuk tes /v1/public/*
   helpers/auth.ts      fixture pengguna, pembaca Set-Cookie, dan pembaca respons bertipe
 vitest.config.ts       project Vitest `unit` dan `integration`
 docker/postgres-init/  skrip init container Postgres (membuat ornament_test)
@@ -737,6 +743,87 @@ server (`AppError`, `ERROR_STATUS`, `ok()`, error handler) dan tipe Prisma.
 - `build` backend tidak membangun shared; dari root, `npm run build:backend`
   atau `npm run build` membangun shared lebih dulu. Artefak deploy butuh
   `packages/shared/dist` dan `node_modules/@ornament/shared`.
+
+## API baca publik (`/v1/public/*`)
+
+Sumber: kontrak [`docs/api-contract.md`](docs/api-contract.md) §5.1 (produk,
+kategori, material) dan §5.2 (pengrajin), dengan aturan privasi §4 dan konvensi
+§1. Kode: `src/modules/public/`.
+
+Pemanggil utamanya adalah server Next situs publik (server-to-server), tetapi
+GET **tidak** butuh auth (ADR A9): ia dilindungi rate limit dan dirancang untuk
+di-cache di edge.
+
+### Endpoint
+
+| Endpoint | Query | Respons |
+| --- | --- | --- |
+| `GET /v1/public/products` | `category` (slug, termasuk turunan), `material` (slug dipisah koma, **AND**), `tag`, `artisan`, `sort=-publishedAt` (default) \| `name`, `limit` (≤48, default 12), `cursor` | `{ data: PublicProductCard[], meta: { limit, nextCursor, total } }` |
+| `GET /v1/public/products/:slug` | — | `{ data: PublicProductDetail }` — spesifikasi, checklist QC 4 tahap, pengrajin ringkas, dan maks 4 produk terkait |
+| `GET /v1/public/categories` | `withEmpty` (default `false`) | Daftar datar urut pohon + `depth` dan `productCount` (kategori + turunannya) |
+| `GET /v1/public/materials` | `withEmpty` | Urut `name`, dengan `productCount` |
+| `GET /v1/public/artisans` | `regency` (tanpa memandang besar-kecil huruf), `limit`, `cursor` | `{ data: PublicArtisanCard[], meta }` — hanya `ACTIVE`/`FULL_CAPACITY` yang tidak diarsipkan |
+| `GET /v1/public/artisans/:slug` | — | `{ data: PublicArtisanDetail }` — profil + maks 12 produk terbaru miliknya |
+
+Slug filter yang tidak dikenal menjawab `200` dengan `data: []` (bukan `404`),
+supaya URL filter lama tidak error. Produk draf/di Trash dan pengrajin
+`VERIFICATION`/diarsipkan menjawab `404` di endpoint detailnya.
+
+Belum ada di sini (menyusul di tahap berikutnya, lihat kontrak): artikel &
+komentar (§5.3), inquiry (§5.4), serta settings/menu/halaman/sitemap/redirect
+slug (§5.5).
+
+### Privasi DTO (kontrak §4)
+
+DTO publik ditulis sebagai **whitelist eksplisit** di `packages/shared/src/products.ts`
+dan `artisans.ts`, bukan hasil `omit` dari model, dan `select` Prisma di
+`src/modules/public/**/dto.ts` hanya mengambil kolom yang memang dikirim. Jadi
+kolom seperti `stockNote`, `stockStatusOverride`, `lowStockThreshold`,
+`ProductQcCheck.notes`, `revision`, `publishStatus`, `deletedAt`, `phone`,
+`address`, `contactName`, `internalNotes`, dan `ArtisanDocument` tidak punya
+jalur ke respons publik — juga bila kolom baru ditambahkan ke Prisma nanti.
+Tes kontraknya ada di `test/integration/public-products.test.ts` dan
+`public-artisans.test.ts`.
+
+Pengrajin yang diarsipkan atau berstatus `VERIFICATION` (model §6.7/A10):
+produknya **tetap** tayang, tetapi di detail produk pengrajinnya muncul dengan
+`slug: null` sehingga UI menampilkannya tanpa tautan.
+
+### Penanda rute publik
+
+Cerminan `config.adminAccess`: setiap rute `/v1/public/*` **wajib** memakai
+`config: publicReadAccess()` (GET) atau `publicWriteAccess("alasan")` (POST).
+Penanda itu membawa batas rate limit §2.3 sekaligus, dan rute yang lupa
+memakainya **gagal saat registrasi** (`MissingPublicAccessError`) alih-alih
+tayang tanpa batas. Lihat `src/modules/public/guard.ts` dan
+`test/unit/public-access.test.ts`.
+
+```ts
+app.get('/public/products', { config: publicReadAccess(), schema: { … } }, handler);
+```
+
+| Aspek | Nilai |
+| --- | --- |
+| `Cache-Control` GET | `public, max-age=0, s-maxage=60, stale-while-revalidate=300` (§1.2) |
+| `Cache-Control` POST | `no-store` |
+| Rate limit dengan `X-Internal-Key` valid | 1200 / menit per IP |
+| Rate limit tanpa key (atau key salah) | 120 / menit per IP |
+
+`X-Internal-Key` **tidak wajib** pada GET; key yang salah diperlakukan sama
+dengan tanpa key (bukan `401`), hanya kuotanya yang lebih ketat. Kuota tepercaya
+dan anonim memakai kunci hitung yang berbeda, sehingga kuota longgar server Next
+tidak bisa "dipinjam". POST publik tetap mewajibkan key (`401 INVALID_INTERNAL_KEY`).
+
+### Pagination kursor
+
+Daftar publik memakai keyset (kontrak §1.6), bukan `OFFSET`: kursor menyimpan
+sort, sidik jari filter, nilai kolom sort, dan `id` baris terakhir
+(`src/lib/cursor.ts`). Akibatnya produk yang terbit di antara dua klik
+"Muat 12 lagi" tidak membuat item terlewat atau tampil dua kali, dan kursor yang
+dipakai dengan filter/sort berbeda ditolak `400 INVALID_CURSOR`.
+
+Indeks `product(publish_status, deleted_at, published_at DESC, id DESC)`
+(migrasi `20260919034034_indeks_keyset_katalog_publik`) melayani urutan itu.
 
 ## Script
 
