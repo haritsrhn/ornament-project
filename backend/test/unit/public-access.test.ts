@@ -29,7 +29,14 @@ async function collectRoutes(app: FastifyInstance): Promise<RouteOptions[]> {
 }
 
 /** Rute publik yang memang **menulis**, beserta alasannya. Ditulis ulang di sini supaya penambahannya terlihat saat review. */
-const EXPECTED_PUBLIC_WRITE_ROUTES = new Set<string>();
+const EXPECTED_PUBLIC_WRITE_ROUTES = new Set<string>([
+  // Submit form "Konsultasikan Proyek" (kontrak §5.4, #21).
+  'POST /v1/public/inquiries',
+  // Presign lampiran inquiry (A5); presign-nya sendiri ditunda ke Tahap 7.
+  'POST /v1/public/inquiry-uploads',
+  // Submit komentar journal, masuk antrean moderasi (kontrak §5.3, #22).
+  'POST /v1/public/articles/:slug/comments',
+]);
 
 describe('penanda rute publik', () => {
   test('setiap rute /v1/public/* menyatakan publicAccess dan rateLimit', async () => {

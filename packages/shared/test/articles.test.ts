@@ -3,6 +3,8 @@ import { describe, expect, test } from 'vitest';
 import {
   articleBlockSchema,
   articleContentSchema,
+  publicCommentInputSchema,
+  COMMENT_BODY_MAX,
   publicArticleBlockSchema,
   ARTICLE_BLOCKS_MAX,
 } from '../src/articles.js';
@@ -70,5 +72,44 @@ describe('href turunan situs publik', () => {
   test('menu kategori menjadi filter katalog, dengan slug ter-encode', () => {
     expect(navCategoryHref('furniture')).toBe('/catalog?category=furniture');
     expect(navCategoryHref('kursi & meja')).toBe('/catalog?category=kursi%20%26%20meja');
+  });
+});
+
+describe('publicCommentInputSchema (kontrak §5.3, Q9)', () => {
+  const valid = { authorName: 'Sofia L.', authorEmail: 'sofia@studio.se', body: 'Berapa lama?' };
+
+  test('menerima nama, email, dan isi', () => {
+    expect(publicCommentInputSchema.safeParse(valid).success).toBe(true);
+  });
+
+  test.each(['authorName', 'authorEmail', 'body'])('%s wajib', (field) => {
+    // Bangun ulang tanpa `field` alih-alih `delete` dinamis (aturan lint).
+    const body = Object.fromEntries(Object.entries(valid).filter(([key]) => key !== field));
+    const result = publicCommentInputSchema.safeParse(body);
+    expect(result.success).toBe(false);
+    expect(result.error?.issues.some((i) => i.path[0] === field)).toBe(true);
+  });
+
+  test('email wajib valid (Q9: tidak boleh kosong)', () => {
+    const result = publicCommentInputSchema.safeParse({ ...valid, authorEmail: '' });
+    expect(result.success).toBe(false);
+  });
+
+  test('isi maksimal 2000 karakter (model §3.6)', () => {
+    expect(
+      publicCommentInputSchema.safeParse({ ...valid, body: 'x'.repeat(COMMENT_BODY_MAX) }).success,
+    ).toBe(true);
+    expect(
+      publicCommentInputSchema.safeParse({ ...valid, body: 'x'.repeat(COMMENT_BODY_MAX + 1) })
+        .success,
+    ).toBe(false);
+  });
+
+  test('`parentId` dan `status` ditolak: komentar publik selalu akar (§3.6)', () => {
+    for (const extra of [{ parentId: crypto.randomUUID() }, { status: 'APPROVED' }]) {
+      const result = publicCommentInputSchema.safeParse({ ...valid, ...extra });
+      expect(result.success).toBe(false);
+      expect(result.error?.issues[0]?.code).toBe('unrecognized_keys');
+    }
   });
 });

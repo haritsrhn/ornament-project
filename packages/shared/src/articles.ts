@@ -1,6 +1,6 @@
 import { z } from 'zod';
 
-import { publicMediaSchema, slugRefSchema } from './common.js';
+import { honeypotSchema, publicMediaSchema, slugRefSchema } from './common.js';
 import { dataEnvelope, dataMetaEnvelope } from './envelope.js';
 import {
   cursorMetaWithTotalSchema,
@@ -117,6 +117,9 @@ export const publicArticlesQuerySchema = cursorQuerySchema(PUBLIC_CURSOR_LIMITS)
 });
 export type PublicArticlesQuery = z.infer<typeof publicArticlesQuerySchema>;
 
+/** Teks polos komentar, maks 2000 karakter (model §3.6, kontrak §5.3). */
+export const COMMENT_BODY_MAX = 2000;
+
 /** Komentar memakai kursor dengan default 20 (kontrak §5.3), bukan 12. */
 export const COMMENT_CURSOR_LIMITS = { defaultLimit: 20, maxLimit: 48 } as const;
 
@@ -187,6 +190,37 @@ export const publicCommentSchema = publicCommentReplySchema.extend({
   replies: z.array(publicCommentReplySchema),
 });
 export type PublicComment = z.infer<typeof publicCommentSchema>;
+
+// ── Submit komentar (kontrak §5.3) ───────────────────────────────────────────
+
+/**
+ * Body `POST /v1/public/articles/:slug/comments`.
+ *
+ * `authorEmail` **wajib** (Q9) dan 🔒: ia tidak pernah keluar lagi lewat DTO
+ * mana pun — tidak sebagai hash Gravatar, tidak sebagai apa pun (§4).
+ *
+ * `strictObject`: `status`, `parentId`, `notifyOnReply`, `authorUserId`, dan
+ * field tak dikenal lain ditolak `400` (`unrecognized_keys`). Komentar publik
+ * karena itu selalu komentar **akar**; balasan bersarang hanya dibuat admin
+ * (model §3.6: nesting maksimal 1 tingkat).
+ */
+export const publicCommentInputSchema = z.strictObject({
+  authorName: z.string().trim().min(1, 'Nama wajib diisi.').max(80),
+  authorEmail: z.email('Email tidak valid.').max(255),
+  body: z.string().trim().min(1, 'Komentar tidak boleh kosong.').max(COMMENT_BODY_MAX),
+  website: honeypotSchema,
+});
+export type PublicCommentInput = z.infer<typeof publicCommentInputSchema>;
+
+/**
+ * Respons submit: **hanya** status antrean moderasi. Tidak ada `id`, tidak ada
+ * isi komentar, tidak ada apa pun yang bisa dipakai mengaitkan email dengan
+ * komentar (§4).
+ */
+export const publicCommentSubmitSchema = z.object({ status: z.literal('PENDING') });
+export type PublicCommentSubmit = z.infer<typeof publicCommentSubmitSchema>;
+
+export const publicCommentSubmitResponseSchema = dataEnvelope(publicCommentSubmitSchema);
 
 // ── Respons ──────────────────────────────────────────────────────────────────
 
