@@ -19,10 +19,79 @@ export interface CatalogFixtureIds {
   tagIds: string[];
   artisanIds: string[];
   productIds: string[];
+  mediaIds: string[];
+  articleCategoryIds: string[];
+  articleIds: string[];
 }
 
 export function emptyFixtureIds(): CatalogFixtureIds {
-  return { categoryIds: [], materialIds: [], tagIds: [], artisanIds: [], productIds: [] };
+  return {
+    categoryIds: [],
+    materialIds: [],
+    tagIds: [],
+    artisanIds: [],
+    productIds: [],
+    mediaIds: [],
+    articleCategoryIds: [],
+    articleIds: [],
+  };
+}
+
+export interface CreateMediaInput {
+  key: string;
+  visibility?: 'PUBLIC' | 'PRIVATE';
+  alt?: string | null;
+}
+
+/**
+ * Media fixture untuk `primaryImageId`/`images` produk. Modul media admin
+ * belum ada (Tahap 7), jadi tes membuat barisnya langsung — sama seperti
+ * fixture katalog lain di berkas ini.
+ */
+export async function createMedia(
+  prisma: PrismaClient,
+  ids: CatalogFixtureIds,
+  input: CreateMediaInput,
+): Promise<string> {
+  const media = await prisma.media.create({
+    data: {
+      key: `media/2026/09/${input.key}.jpg`,
+      visibility: input.visibility ?? 'PUBLIC',
+      kind: 'IMAGE',
+      fileName: `${input.key}.jpg`,
+      mimeType: 'image/jpeg',
+      sizeBytes: BigInt(1024),
+      width: 1600,
+      height: 2000,
+      alt: input.alt === undefined ? 'Foto produk' : input.alt,
+    },
+    select: { id: true },
+  });
+  ids.mediaIds.push(media.id);
+  return media.id;
+}
+
+export interface CreateArticleCategoryInput {
+  slug: string;
+  name?: string;
+  position?: number;
+}
+
+export async function createArticleCategory(
+  prisma: PrismaClient,
+  ids: CatalogFixtureIds,
+  input: CreateArticleCategoryInput,
+): Promise<string> {
+  const category = await prisma.articleCategory.create({
+    data: {
+      slug: input.slug,
+      name: input.name ?? input.slug,
+      position: input.position ?? 0,
+    },
+    select: { id: true },
+  });
+  ids.articleCategoryIds.push(category.id);
+  return category.id;
 }
 
 export interface CreateCategoryInput {
@@ -219,7 +288,19 @@ export async function deleteCatalogFixture(
   prisma: PrismaClient,
   ids: CatalogFixtureIds,
 ): Promise<void> {
+  if (ids.articleIds.length > 0) {
+    await prisma.article.deleteMany({ where: { id: { in: ids.articleIds } } });
+  }
+  if (ids.articleCategoryIds.length > 0) {
+    await prisma.articleCategory.deleteMany({ where: { id: { in: ids.articleCategoryIds } } });
+  }
   if (ids.productIds.length > 0) {
+    // Produk hasil duplikat/`POST` tes belum tentu tercatat di `ids`; yang
+    // menunjuk produk fixture lewat `duplicatedFromId` dihapus lebih dulu
+    // supaya `SetNull` tidak meninggalkan baris yatim di DB tes.
+    await prisma.product.deleteMany({
+      where: { duplicatedFromId: { in: ids.productIds } },
+    });
     await prisma.product.deleteMany({ where: { id: { in: ids.productIds } } });
   }
   if (ids.artisanIds.length > 0) {
@@ -234,5 +315,9 @@ export async function deleteCatalogFixture(
   // Kategori anak lebih dulu (FK `Restrict` ke induk).
   for (const id of [...ids.categoryIds].reverse()) {
     await prisma.category.deleteMany({ where: { id } });
+  }
+  if (ids.mediaIds.length > 0) {
+    // Media memakai `Restrict` dari produk, jadi harus setelah produknya.
+    await prisma.media.deleteMany({ where: { id: { in: ids.mediaIds } } });
   }
 }

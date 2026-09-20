@@ -17,6 +17,19 @@ export const QC_STATUSES = ['PENDING', 'IN_PROGRESS', 'PASSED', 'FAILED'] as con
 export const qcStatusSchema = z.enum(QC_STATUSES);
 export type QcStatus = z.infer<typeof qcStatusSchema>;
 
+export const PUBLISH_STATUSES = ['DRAFT', 'PUBLISHED'] as const;
+export const publishStatusSchema = z.enum(PUBLISH_STATUSES);
+export type PublishStatus = z.infer<typeof publishStatusSchema>;
+
+/**
+ * Tabel taksonomi yang dipilih query `type` pada `/v1/admin/categories*`
+ * (kontrak §5.7, model §3.3 Q4): `PRODUCT` → `Category`, `ARTICLE` →
+ * `ArticleCategory`. Hanya pembeda di API, bukan kolom di database.
+ */
+export const CATEGORY_TYPES = ['PRODUCT', 'ARTICLE'] as const;
+export const categoryTypeSchema = z.enum(CATEGORY_TYPES);
+export type CategoryType = z.infer<typeof categoryTypeSchema>;
+
 export const ARTISAN_STATUSES = ['VERIFICATION', 'ACTIVE', 'FULL_CAPACITY'] as const;
 export const artisanStatusSchema = z.enum(ARTISAN_STATUSES);
 export type ArtisanStatus = z.infer<typeof artisanStatusSchema>;

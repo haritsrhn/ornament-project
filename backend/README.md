@@ -38,6 +38,9 @@ src/
   lib/cursor.ts        kursor keyset daftar publik (kontrak §1.6) + sidik jari filter
   lib/attempt-throttle.ts  penghitung percobaan berjendela tetap, in-memory (lockout & submit publik)
   lib/idempotency.ts   withIdempotency() — simpanan 24 jam `(key, rute, ipHash) → respons` (§1.8)
+  lib/like.ts          escapeLike() — meloloskan %/_/\ pada pencarian `q` ILIKE (§1.7)
+  lib/slug.ts          slugify()/uniqueSlug()/uniqueCopySlug() — aturan slug model §6.1/§6.3
+  lib/prisma-error.ts  P2002 → `409 CONFLICT` + details.fields (nama indeks driver adapter)
   modules/auth/session.ts        service sesi: token 32 byte, SHA-256 di DB, sliding refresh
   modules/auth/cookie.ts         atribut cookie __Host-osa_session di satu tempat
   modules/auth/guard.ts          app.requireSession / app.requireRole(...)
@@ -55,6 +58,13 @@ src/
   modules/public/site/           situs publik: settings, menu, halaman & blok, sitemap, redirect
   modules/public/inquiries/      submit inquiry + presign lampiran (kontrak §5.4)
   modules/public/comments/       submit komentar journal → antrean moderasi (kontrak §5.3)
+  modules/admin/products/access.ts   batas kepemilikan/status Contributor (403 NOT_OWNER/NOT_DRAFT)
+  modules/admin/products/dto.ts      DTO admin produk + syarat publish §6.3 (publishReadiness)
+  modules/admin/products/service.ts  tulis produk: slug, SKU, stok, revisi, Trash, duplikat, redirect
+  modules/admin/products/sku.ts      saran SKU §6.2 (sequence Postgres + YYMM zona SiteSetting)
+  modules/admin/products/routes.ts   rute /v1/admin/products/* (kontrak §5.6)
+  modules/admin/taxonomy/dto.ts      DTO kategori (produk & artikel), material, tag
+  modules/admin/taxonomy/routes.ts   rute /v1/admin/categories|materials|tags (kontrak §5.7)
   modules/email/sender.ts        antarmuka EmailSender + NoopEmailSender (Resend ditunda, ADR K4)
   plugins/prisma.ts    registerPrisma() — decorate app.prisma + $disconnect saat onClose
   plugins/validation.ts  validator/serializer Zod, locale pesan Indonesia, hanya body JSON
@@ -80,7 +90,7 @@ test/
                        seed.test.ts menjalankan seed ke DB tes lalu membersihkannya
   helpers/app.ts       buildTestApp() — app dengan logger mati, ditutup otomatis di akhir tes
   helpers/database.ts  resolveTestDatabaseUrl() + createTestPrisma() — hanya DB `*_test`
-  helpers/catalog.ts   fixture kategori/material/pengrajin/produk untuk tes /v1/public/*
+  helpers/catalog.ts   fixture kategori/material/media/pengrajin/produk/artikel untuk tes
   helpers/journal.ts   fixture artikel/komentar/halaman/blok/menu/redirect untuk tes /v1/public/*
   helpers/auth.ts      fixture pengguna, pembaca Set-Cookie, dan pembaca respons bertipe
 vitest.config.ts       project Vitest `unit` dan `integration`
@@ -1068,9 +1078,135 @@ upload yang tidak ada atau kedaluwarsa, yang memang keadaannya: tidak ada
 
 - Job harian §6.11 (mengosongkan `ipHash`/`userAgent` > 30 hari) dan pembersih
   `idempotency_record` kedaluwarsa terjadwal.
-- Moderasi komentar & balasan admin (Tahap 6), yang juga menegakkan nesting maks
-  1 tingkat.
+- Moderasi komentar & balasan admin (Tahap 6, PR berikutnya), yang juga
+  menegakkan nesting maks 1 tingkat.
 - Presign R2 (Tahap 7) dan Resend (Tahap 8), lihat dua bagian di atas.
+
+## Admin produk (`/v1/admin/products/*`)
+
+Kontrak §5.6. Dua lapis izin dipakai bersama dan sengaja dipisah:
+
+1. **Matriks §3** lewat `config.adminAccess` — "peran ini punya tombolnya?".
+2. **Kepemilikan/status** lewat `modules/admin/products/access.ts` — "boleh untuk
+   baris ini?". Contributor hanya boleh menulis **draf miliknya sendiri** (A1);
+   penolakannya `403` dengan `details.reason` `NOT_OWNER`/`NOT_DRAFT` (§2.4),
+   **bukan** `404`, karena membaca produk orang lain memang boleh (§3.2).
+
+| Method & path | Penanda izin | Catatan |
+| --- | --- | --- |
+| `GET /admin/products` | `adminSession()` | Paginasi nomor halaman + `meta.counts` (`all`, `PUBLISHED`, `DRAFT`, `trash`) |
+| `POST /admin/products` | `product.write_draft` | Selalu `DRAFT`, `revision = 1`, 4 baris QC `PENDING` |
+| `POST /admin/products/sku-suggestions` | `product.write_draft` | Tidak menyimpan apa pun; `POST` karena mengambil nomor sequence |
+| `POST /admin/products/bulk` | `product.write_draft` | Izin dicek **per item**; `BulkResult`, sukses parsial |
+| `GET /admin/products/:id` | `adminSession()` | Termasuk yang di Trash |
+| `PATCH /admin/products/:id` | `product.write_draft` | `expectedRevision` wajib (§1.9) |
+| `POST /admin/products/:id/publish` \| `/unpublish` | `product.publish` | Editor+ |
+| `POST /admin/products/:id/duplicate` | `product.write_draft` | `Idempotency-Key` opsional (§1.8) |
+| `DELETE /admin/products/:id` | `product.trash` | Trash (`deletedAt`), bukan hapus |
+| `POST /admin/products/:id/restore` | `product.restore` | **Selalu** kembali `DRAFT` (Q3) |
+| `DELETE /admin/products/:id/permanent` | `product.purge` | Administrator saja (A3) |
+| `PATCH /admin/products/:id/qc/:stage` | `product.qc` | Tidak menaikkan `revision` |
+| `GET /admin/products/:id/revisions[/:number]` | `adminSession()` | Snapshot 🔒: Contributor hanya miliknya |
+
+Rute **baca** memakai `adminSession()`, bukan izin tulis yang kebetulan dimiliki
+ketiga peran: kontrak §3.2 memang memberi baca ke semua peran, dan menulis
+`adminPermission('product.write_draft')` pada sebuah `GET` akan menyesatkan
+pembaca rute.
+
+### Syarat publish (§6.3)
+
+`name`, `sku`, `categoryId`, `artisanId`, `primaryImageId`, tepat satu material
+primer, `moqQuantity`, dan pengrajin tidak diarsipkan. Satu fungsi
+(`publishRequirementIssues()`) melayani dua tempat sekaligus:
+
+- `publishReadiness: { ready, missing[] }` di **setiap** respons produk — untuk
+  tombol "Terbitkan" di UI;
+- `details` pada `422 PUBLISH_REQUIREMENTS_NOT_MET` — `[{ path, code }]`.
+
+Karena sumbernya satu, tombol di UI dan penolakan server tidak pernah bisa
+berbeda pendapat. `code` `artisan_archived` dibedakan dari `required`: UI perlu
+menyarankan **mengganti** pengrajin, bukan mengisinya.
+
+`PATCH` pada produk yang sedang tayang ikut diperiksa: perubahan yang membuatnya
+tidak layak tayang (mis. `primaryImageId: null`) ditolak `422` dan seluruh
+transaksi dibatalkan, sehingga tidak ada pintu belakang menuju produk terbit
+yang tidak lengkap.
+
+### Revisi, stok, duplikat, Trash
+
+- **Revisi (§6.3):** setiap simpan yang mengubah isi menaikkan `revision` dan
+  menulis `ProductRevision` **dalam transaksi yang sama**. Snapshot disimpan
+  sebagai DTO `AdminProduct`, bukan baris Prisma mentah, supaya riwayat lama
+  tetap terbaca dengan kontrak yang sama. Menyimpan tanpa perubahan tidak
+  menaikkan revisi (kontrak §5.6), jadi menekan Simpan dua kali tidak memalsukan
+  riwayat.
+- **Stok (Q13/A11):** `stockStatus` adalah turunan yang **disimpan**, dihitung
+  server setiap simpan lewat `deriveStockStatus()` di `@ornament/shared` (override
+  → `MADE_TO_ORDER` bila tanpa jumlah → `LOW_STOCK` bila ≤ ambang → `IN_STOCK`).
+  Klien tidak pernah mengirimnya (`strictObject` → `400`). Satu-satunya validasi
+  A11: status efektif `MADE_TO_ORDER` mewajibkan `stockQuantity = null`.
+- **Duplikat (§6.3):** `<nama> (copy)`, slug `<slug>-copy`, `sku = null`,
+  `DRAFT`, `revision = 1`, `duplicatedFromId` terisi, dan checklist QC **direset**
+  ke `PENDING` — `criteria` ikut disalin karena ia isi produk, sedangkan status,
+  catatan, dan `checkedBy`/`checkedAt` adalah hasil pemeriksaan barang lain.
+- **Trash (§6.4):** `DELETE` mengisi `deletedAt`; `restore` mengosongkannya dan
+  **selalu** mengembalikan `publishStatus = DRAFT` (`publishedAt` dipertahankan
+  sebagai jejak pernah tayang). Justru karena pemulihan tidak pernah menayangkan
+  konten, Contributor boleh memulihkan miliknya sendiri tanpa izin terbit.
+- **Redirect slug (§6.10):** slug berubah → `SlugRedirect` slug lama dibuat dan
+  redirect yang `fromSlug`-nya = slug baru dihapus (slug aktif selalu menang),
+  semuanya dalam transaksi yang sama. Hasilnya langsung terbaca
+  `GET /v1/public/redirects?type=PRODUCT&slug=<slug lama>`.
+
+### Saran SKU (§6.2)
+
+`POST /admin/products/sku-suggestions` mengembalikan `ORN-<skuCode>-<NNNN>` bila
+material primer punya `skuCode`, atau `ORN-<YYMM>-<NNNN>` bila tidak. `YYMM`
+memakai `SiteSetting.timezone` lewat `Intl`, bukan UTC: saran yang dibuat
+1 September pukul 06.00 WIB tidak boleh berkode Agustus. `NNNN` diambil dari
+sequence Postgres `product_sku_seq` (migrasi awal) dan **tidak transaksional** —
+saran yang tidak jadi dipakai meninggalkan lubang nomor, dan itu memang yang
+diinginkan: nomor tidak pernah dipakai dua kali. Server tidak pernah mengisi
+`sku` diam-diam (Q6).
+
+## Admin taksonomi (`/v1/admin/categories|materials|tags`)
+
+Kontrak §5.7. **Satu set endpoint melayani dua tabel** lewat query `type` (Q4):
+`PRODUCT` → `Category` (hierarkis), `ARTICLE` → `ArticleCategory` (datar). Layar
+`/admin/taxonomy` memakainya sebagai tab Produk/Artikel; tidak ada modul admin
+kedua yang harus ikut diubah setiap kali aturannya bergeser.
+
+Izin (§3.2): **baca** boleh semua peran (`adminSession()`), **tulis** butuh
+`taxonomy.write` (Editor+) karena taksonomi memengaruhi katalog dan journal
+publik.
+
+- **Pohon kategori** disusun di memori dari **satu** query (`flattenTree()` yang
+  sama dengan katalog publik), lalu `productCount` dijumlahkan naik ke setiap
+  leluhur dengan `rollUpCounts()` — bukan satu query per kategori.
+- **Siklus ditolak** (`422 CATEGORY_CYCLE`): induk tidak boleh dirinya sendiri
+  maupun turunannya. Dicek di aplikasi karena FK `Restrict` hanya menjamin
+  induknya ada, bukan bahwa pohonnya tetap pohon.
+- **`PUT /categories/order`** menerima **seluruh** pohon sekaligus dalam satu
+  transaksi; kiriman sebagian ditolak `422 CATEGORY_SET_MISMATCH`, karena
+  menerapkannya akan menghasilkan urutan yang tidak pernah diminta siapa pun.
+- **Hapus yang masih dipakai** → `409 IN_USE` dengan `details.counts` per
+  `entityType` dan `total` dari hitungan **sebenarnya**, sementara `usages` hanya
+  memuat maksimal 20 contoh (Q5). UI menulis "masih digunakan oleh 9 produk" dari
+  `counts`, jadi angkanya tidak boleh ikut terpotong bersama daftar contohnya.
+- **Tag** tidak punya `409 IN_USE`: relasinya `Cascade`, jadi menghapus tag hanya
+  melepaskannya dari konten.
+- **`Material.skuCode`** unik dan dinormalisasi huruf besar (`^[A-Z]{3}$`).
+  Mengubahnya **tidak** mengubah SKU produk lama (§6.2): SKU yang sudah tercetak
+  di dokumen tidak boleh berubah sendiri.
+
+### `409 CONFLICT` dengan driver adapter
+
+Dengan `@prisma/adapter-pg` (ADR K1) Prisma **tidak** lagi mengisi `meta.target`
+pada `P2002`; yang tersedia hanya nama indeks Postgres di
+`meta.driverAdapterError.cause.constraint.index` (mis. `material_sku_code_key`).
+`lib/prisma-error.ts` menerjemahkannya menjadi nama field kontrak
+(`details.fields: ["skuCode"]`). Tanpa itu setiap konflik jatuh ke tebakan
+default dan UI menyorot field yang salah.
 
 ## Script
 

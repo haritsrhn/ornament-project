@@ -5,6 +5,8 @@ import Fastify, { LogController, type FastifyInstance } from 'fastify';
 import type { Env } from './config/env.js';
 import type { PrismaClient } from './generated/prisma/client.js';
 import { NoopEmailSender, type EmailSender } from './modules/email/sender.js';
+import { adminProductsRoutes } from './modules/admin/products/routes.js';
+import { adminTaxonomyRoutes } from './modules/admin/taxonomy/routes.js';
 import { registerAuthGuard } from './modules/auth/guard.js';
 import type { LoginThrottle, PasswordChangeThrottle } from './modules/auth/login-throttle.js';
 import { authRoutes } from './modules/auth/routes.js';
@@ -151,6 +153,8 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       : { passwordThrottle: options.passwordThrottle }),
   });
   void app.register(usersRoutes, { prefix: '/v1', ...mediaPublicUrl });
+  void app.register(adminProductsRoutes, { prefix: '/v1', ...mediaPublicUrl });
+  void app.register(adminTaxonomyRoutes, { prefix: '/v1' });
   void app.register(invitesRoutes, {
     prefix: '/v1',
     ...(options.emailSender === undefined ? {} : { emailSender: options.emailSender }),
