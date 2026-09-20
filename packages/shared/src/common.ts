@@ -39,9 +39,11 @@ export type SlugRef = z.infer<typeof slugRefSchema>;
  * Rich text (model domain D7): JSON blok yang disimpan apa adanya di kolom
  * `Json` (`Product.description`, `Artisan.story`).
  *
- * Skema blok yang lebih ketat (`ArticleBlock[]`) menyusul bersama modul artikel;
- * sampai itu kontrak hanya menjamin "JSON valid", sehingga frontend tetap
- * mendapat tipe yang bisa ditelusuri tanpa mengunci bentuk blok terlalu dini.
+ * Isi **artikel** tidak lagi memakai skema ini: `Article.content` punya skema
+ * blok ketat `articleContentSchema` (`articles.ts`) sesuai model §3.6. Yang
+ * tersisa di sini hanyalah dua kolom rich text yang bentuk bloknya belum
+ * ditetapkan kontrak (`Product.description`, `Artisan.story`), sehingga di
+ * situ kontrak masih hanya menjamin "JSON valid".
  */
 export const richTextSchema = z.json();
 export type RichText = z.infer<typeof richTextSchema>;
