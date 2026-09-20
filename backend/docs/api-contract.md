@@ -472,11 +472,12 @@ Tidak ada `contactName`, `phone`, `address`, `internalNotes`, atau dokumen (§4)
 | `GET /v1/public/article-categories` | `withEmpty?: bool` (default false) | `200 { data: PublicArticleCategory[] }` urut `position`, `articleCount` = artikel terbit | — |
 | `GET /v1/public/articles` | `category?: slug` (`ArticleCategory.slug`; tak dikenal → `data: []`), `tag?: slug`, `limit?`, `cursor?` | `200 { data: PublicArticleCard[], meta: CursorMeta(total) }`; terbit = `PUBLISHED` atau `SCHEDULED && publishAt <= now()` (ADR K8), sort `-publishedAt` (untuk terjadwal: `publishAt`) | `400 INVALID_CURSOR` |
 | `GET /v1/public/articles/:slug` | — | `200 { data: PublicArticleDetail }` | `404`. Pada 404, Next memeriksa `GET /v1/public/redirects` (§5.5). |
-| `GET /v1/public/articles/:slug/comments` | `limit?` (default 20), `cursor?` | `200 { data: PublicComment[], meta: CursorMeta(total) }`, komentar akar `APPROVED` urut `createdAt` naik, balasan bersarang 1 tingkat | `404` (artikel tidak terbit) |
+| `GET /v1/public/articles/:slug/comments` | `limit?` (default 20), `cursor?` | `200 { data: PublicComment[], meta: CursorMeta(total) }`, komentar akar `APPROVED` urut `createdAt` naik, balasan bersarang 1 tingkat. `meta.total` = jumlah komentar **akar** yang cocok filter (semantik pagination §1.6); angka "Diskusi (n)" di UI memakai `PublicArticleCard.commentCount`, yang menghitung balasan juga (§6.8) | `404` (artikel tidak terbit) |
 | `POST /v1/public/articles/:slug/comments` | Header `X-Internal-Key`, `Idempotency-Key`. Body `{ authorName: string(1–80), authorEmail: email (wajib, Q9), body: string(1–2000), website?: string }` (`website` = honeypot, harus kosong) | `202 { data: { status: "PENDING" } }` | `400 VALIDATION_FAILED` (mis. `authorEmail` kosong), `404` (artikel tidak terbit), `401 INVALID_INTERNAL_KEY`, `429`. Honeypot terisi → **`202` palsu** tanpa menyimpan (A6). |
 
 ```ts
-PublicArticleCategory = { slug; name; description: string|null; position: int; articleCount: int }
+PublicArticleCategory = { id; slug; name; description: string|null; position: int; articleCount: int }
+// `id` disertakan agar konsisten dengan §4 dan dengan PublicCategory/PublicMaterial.
 PublicArticleCard   = { id; slug; title; excerpt: string; category: { slug; name };   // selalu terisi untuk artikel terbit
                         featuredImage: PublicMedia|null; author: { name }; publishedAt: iso; commentCount: int }
 PublicArticleDetail = PublicArticleCard & { content: PublicArticleBlock[]; tags: { slug; name }[] }
@@ -585,12 +586,14 @@ Validasi gagal:
 
 | Method & path | Query | Respons | Error |
 | --- | --- | --- | --- |
-| `GET /v1/public/settings` | — | `200 { data: PublicSiteSetting }` (field §4; `logo`/`icon`: `PublicMedia\|null`) | — |
+| `GET /v1/public/settings` | — | `200 { data: PublicSiteSetting }` (field §4; `logo`/`icon`: `PublicMedia\|null`) | `404 NOT_FOUND` bila baris singleton `SiteSetting` belum ada (API tidak mengarang nilai default) |
 | `GET /v1/public/nav-items` | — | `200 { data: { label; type: NavItemType; href: string; style: NavItemStyle; position: int }[] }`. `href` diturunkan: `PAGE` → `Page.path`, `CATEGORY` → `/catalog?category=<slug>`, `ARTICLE_ARCHIVE` → `/journal`, `CUSTOM_LINK` → `url`. Item yang menunjuk Page tidak terbit tidak dikirim. | — |
 | `GET /v1/public/pages` | `path: string` (wajib, mis. `/our-story`) | `200 { data: PublicPage }` | `404` (tidak ada / `DRAFT` / Trash) |
 | `GET /v1/public/blocks/global` | — | `200 { data: PublicBlock[] }` (untuk layout yang tidak punya Page, mis. `/produk/[slug]`) | — |
-| `GET /v1/public/sitemap` | — | `200 { data: { enabled: bool; entries: { path: string; updatedAt: iso }[] } }` (halaman, produk, artikel, pengrajin publik; tanpa slug lama) | — |
+| `GET /v1/public/sitemap` | — | `200 { data: { enabled: bool; entries: { path: string; updatedAt: iso }[] } }` (halaman, produk, artikel, pengrajin publik; tanpa slug lama). `entries` selalu dikirim walau `sitemapEnabled = false` — isinya memang konten publik; `enabled` yang menentukan apakah Next menyajikan `/sitemap.xml` | — |
 | `GET /v1/public/redirects` | `type: SlugRedirectType` (wajib), `slug: string` (wajib, slug lama) | `200 { data: PublicRedirect }` | `404` (tidak ada redirect, atau konten tujuan tidak tayang). Q8, model §6.10. |
+
+Tidak ada endpoint `robots`: kebijakan indeks mesin pencari dibaca dari `allowIndexing` pada `GET /v1/public/settings`, dan `robots.txt` disusun oleh situs Next.
 
 ```ts
 PublicPage  = { path; title; metaTitle: string|null; metaDescription: string|null;
