@@ -4,13 +4,17 @@ import Fastify, { LogController, type FastifyInstance } from 'fastify';
 
 import type { Env } from './config/env.js';
 import type { PrismaClient } from './generated/prisma/client.js';
-import type { EmailSender } from './modules/email/sender.js';
+import { NoopEmailSender, type EmailSender } from './modules/email/sender.js';
 import { registerAuthGuard } from './modules/auth/guard.js';
 import type { LoginThrottle, PasswordChangeThrottle } from './modules/auth/login-throttle.js';
 import { authRoutes } from './modules/auth/routes.js';
 import { invitesRoutes } from './modules/invites/routes.js';
 import { enforcePublicRouteConfig } from './modules/public/guard.js';
 import { publicRoutes } from './modules/public/routes.js';
+import {
+  createPublicSubmitThrottles,
+  type PublicSubmitThrottles,
+} from './modules/public/submit-throttle.js';
 import { usersRoutes } from './modules/users/routes.js';
 import { registerAdminOrigin } from './plugins/admin-origin.js';
 import { registerErrorHandling } from './plugins/error-handler.js';
@@ -59,6 +63,12 @@ export interface BuildAppOptions {
    * ditandai "belum terkirim" alih-alih berpura-pura sukses.
    */
   emailSender?: EmailSender;
+  /**
+   * Batas submit publik per `ipHash` (#23, kontrak §2.3). Default: satu set
+   * baru per app dengan parameter kontrak. Tes memakai jendela/limit kecil
+   * supaya "tertutup setelah N submit" bisa dibuktikan tanpa 5 request nyata.
+   */
+  publicSubmitThrottles?: PublicSubmitThrottles;
   /**
    * `X-Internal-Key` yang dianggap berasal dari server Next (kontrak §1.2).
    * Default `config.INTERNAL_API_KEY`; dipisah agar tes bisa mengatur key tanpa
@@ -148,6 +158,8 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
   void app.register(publicRoutes, {
     prefix: '/v1',
     ...mediaPublicUrl,
+    throttles: options.publicSubmitThrottles ?? createPublicSubmitThrottles(),
+    emailSender: options.emailSender ?? new NoopEmailSender(),
     ...(options.internalApiKey === undefined
       ? config?.INTERNAL_API_KEY === undefined
         ? {}

@@ -40,8 +40,27 @@ export interface EmailSendResult {
   error: string | null;
 }
 
+/**
+ * Notifikasi inquiry baru ke tim (`SiteSetting.contactEmail`, kontrak §5.4).
+ *
+ * Sengaja **tidak** memuat isi pribadi pengirim (email, pesan, lampiran):
+ * yang dibutuhkan tim hanyalah "ada inquiry baru, ini nomornya". Detailnya
+ * dibuka di admin, yang sudah punya kontrol akses dan jejak audit — jadi data
+ * 🔒 tidak ikut menyebar ke kotak masuk dan log penyedia email.
+ */
+export interface InquiryNotificationEmail {
+  /** Tujuan; `SiteSetting.contactEmail`. */
+  to: string;
+  /** `INQ-0043`. */
+  reference: string;
+  /** Subjek turunan (§6.5), mis. "Rotan alami — 400 pcs". */
+  subject: string;
+}
+
 export interface EmailSender {
   sendInvite: (message: InviteEmail) => Promise<EmailSendResult>;
+  /** Hasilnya disimpan di `Inquiry.notificationMessageId`/`notificationError`. */
+  sendInquiryNotification: (message: InquiryNotificationEmail) => Promise<EmailSendResult>;
 }
 
 /** `emailError` saat belum ada penyedia email yang dikonfigurasi. */
@@ -56,6 +75,15 @@ export class NoopEmailSender implements EmailSender {
   // Parameter sengaja tidak diterima sama sekali: tidak ada isi undangan —
   // apalagi tokennya — yang boleh menyentuh log atau penyimpanan lain.
   sendInvite(): Promise<EmailSendResult> {
+    return Promise.resolve({ sentAt: null, messageId: null, error: EMAIL_NOT_CONFIGURED });
+  }
+
+  /**
+   * Inquiry tetap tersimpan dan respons tetap `201`; yang tercatat adalah
+   * `notificationError = "EMAIL_NOT_CONFIGURED"`, sehingga admin melihat
+   * "notifikasi belum terkirim" alih-alih mengira tim sudah diberi tahu.
+   */
+  sendInquiryNotification(): Promise<EmailSendResult> {
     return Promise.resolve({ sentAt: null, messageId: null, error: EMAIL_NOT_CONFIGURED });
   }
 }

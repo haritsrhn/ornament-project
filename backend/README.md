@@ -36,6 +36,8 @@ src/
   lib/http.ts          ok() — membungkus data ke envelope sukses (kontrak §1.4)
   lib/password.ts      hashPassword()/verifyPassword()/needsRehash() — argon2id (ADR K7)
   lib/cursor.ts        kursor keyset daftar publik (kontrak §1.6) + sidik jari filter
+  lib/attempt-throttle.ts  penghitung percobaan berjendela tetap, in-memory (lockout & submit publik)
+  lib/idempotency.ts   withIdempotency() — simpanan 24 jam `(key, rute, ipHash) → respons` (§1.8)
   modules/auth/session.ts        service sesi: token 32 byte, SHA-256 di DB, sliding refresh
   modules/auth/cookie.ts         atribut cookie __Host-osa_session di satu tempat
   modules/auth/guard.ts          app.requireSession / app.requireRole(...)
@@ -44,10 +46,16 @@ src/
   modules/auth/routes.ts         POST login, POST logout, GET me
   modules/public/guard.ts        penanda publicAccess + Cache-Control + rate limit /v1/public/*
   modules/public/media.ts        DTO PublicMedia (URL R2; Media PRIVATE tidak pernah dirujuk)
+  modules/public/client-identity.ts  IP/user agent pengunjung dari X-Client-* + ipHash ber-kunci
+  modules/public/submit-throttle.ts  batas submit per ipHash, dua jendela sekaligus (§2.3)
+  modules/public/submit.ts       kerangka submit publik: ipHash → rate limit → honeypot → idempotensi
   modules/public/products/       katalog publik: query keyset, pohon kategori, DTO, rute
   modules/public/artisans/       pengrajin publik: DTO whitelist + rute
   modules/public/articles/       journal publik: aturan "terbit" (ADR K8), keyset, blok isi, komentar
   modules/public/site/           situs publik: settings, menu, halaman & blok, sitemap, redirect
+  modules/public/inquiries/      submit inquiry + presign lampiran (kontrak §5.4)
+  modules/public/comments/       submit komentar journal → antrean moderasi (kontrak §5.3)
+  modules/email/sender.ts        antarmuka EmailSender + NoopEmailSender (Resend ditunda, ADR K4)
   plugins/prisma.ts    registerPrisma() — decorate app.prisma + $disconnect saat onClose
   plugins/validation.ts  validator/serializer Zod, locale pesan Indonesia, hanya body JSON
   plugins/error-handler.ts  setErrorHandler + setNotFoundHandler → envelope error kontrak §1.5
@@ -225,11 +233,11 @@ dicetak). `dev` dan `start` memuat `backend/.env` bila ada
 | `LOG_LEVEL` | `info` | Level log pino |
 | `DATABASE_URL` | — (**wajib**) | URL `postgresql://` |
 | `ADMIN_ORIGIN` | — | Opsional; wajib sejak auth admin (ADR K7) |
-| `INTERNAL_API_KEY` | — | Opsional; header `X-Internal-Key` (ADR K7) |
+| `INTERNAL_API_KEY` | — | Opsional; header `X-Internal-Key` (ADR K7). **Wajib** agar `POST /v1/public/*` bisa dipanggil sama sekali, dan dipakai sebagai kunci HMAC `ipHash` |
 | `INTERNAL_JOB_TOKEN` | — | Opsional; bearer `/v1/internal/*` (kontrak §5.17) |
 | `SITE_URL`, `REVALIDATE_SECRET` | — | Opsional; revalidasi Next (kontrak §6) |
 | `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_BUCKET`, `R2_PUBLIC_URL` | — | Opsional; media (ADR K3) |
-| `RESEND_API_KEY`, `RESEND_FROM` | — | Opsional; email (ADR K4) |
+| `RESEND_API_KEY`, `RESEND_FROM` | — | Opsional; email (ADR K4). **Belum dibaca kode mana pun**: modul Resend ditunda ke Tahap 8 (lihat "Email" di bawah) |
 
 Di `NODE_ENV=production`, `INTERNAL_API_KEY`, `INTERNAL_JOB_TOKEN`, dan
 `REVALIDATE_SECRET` (bila di-set) minimal 32 karakter.
@@ -887,6 +895,182 @@ dilayani indeks `comment(article_id, status, created_at)` yang sudah ada.
 `meta.total` komentar menghitung komentar **akar** yang cocok filter; angka
 "Diskusi (n)" di UI memakai `commentCount` pada DTO artikel, yang menghitung
 balasan juga (model §6.8).
+
+## Tulis publik: inquiry, komentar, anti-spam
+
+Rute `POST /v1/public/*` (kontrak §5.3/§5.4, issue #21–#23). Berbeda dengan GET
+publik yang boleh dipanggil siapa saja (A9), setiap POST publik melewati empat
+lapis yang urutannya mengikat — `modules/public/submit.ts` menjalankannya di
+satu tempat supaya tidak ada rute tulis yang melewatkan salah satunya:
+
+| # | Lapis | Di mana | Gagal → |
+| --- | --- | --- | --- |
+| 0 | `X-Internal-Key` wajib (A9) | `modules/public/guard.ts` (`onRequest`) | `401 INVALID_INTERNAL_KEY` |
+| 0 | Skema Zod `strictObject` | `schema.body` rute + `@ornament/shared` | `400 VALIDATION_FAILED` |
+| 1 | `ipHash` pengunjung | `client-identity.ts` | — |
+| 2 | Rate limit per `ipHash` (§2.3) | `submit-throttle.ts` | `429 RATE_LIMITED` + `Retry-After` |
+| 3 | Honeypot (A6) | `submit.ts` | **sukses palsu** |
+| 4 | `Idempotency-Key` (§1.8) | `lib/idempotency.ts` | `409`/`422` |
+
+Rute tulis wajib memakai `config: publicWriteAccess("alasan")`; yang lupa gagal
+saat registrasi, dan `test/unit/public-access.test.ts` menuliskan daftar rute
+tulis yang diizinkan secara eksplisit supaya penambahannya terlihat saat review.
+
+### Endpoint
+
+| Method & path | Respons sukses | Catatan |
+| --- | --- | --- |
+| `POST /v1/public/inquiries` | `201 { data: { reference } }` | Hanya `reference` — seluruh isi `Inquiry` 🔒 (§4) |
+| `POST /v1/public/articles/:slug/comments` | `202 { data: { status: "PENDING" } }` | Artikel harus tayang; selain itu `404` |
+| `POST /v1/public/inquiry-uploads` | — | Presign ditunda; lihat "Lampiran" di bawah |
+
+### Nilai yang diisi server (inquiry)
+
+Tidak satu pun bisa dikirim klien (`strictObject` menolaknya, §1.3):
+
+- `number` dari `nextval` sequence kolomnya, `reference = "INQ-" + lpad(number, 4)`
+  dalam `INSERT` yang sama (§6.5). Sequence tidak transaksional, jadi submit yang
+  gagal meninggalkan lubang nomor — itu disengaja: satu nomor tidak pernah dipakai dua kali.
+- `subject` turunan (§6.5): `"<kategori> <material> — n pcs"` bila keduanya terisi,
+  selain itu `"<material ?? kategori ?? 'Permintaan produk'> — n pcs"`.
+- `categoryLabel`/`materialLabel` = **salinan** nama taksonomi saat submit, supaya
+  inquiry lama tetap terbaca setelah kategori diganti nama atau dihapus (`SetNull`).
+  `categoryId`/`materialId` yang tidak dikenal → `400` dengan `details[].code = "not_found"`.
+- `targetShipDate` diturunkan dari `targetShipText` bila polanya terbaca
+  (`parseTargetShipDate` di `@ornament/shared`, dipakai server **dan** form):
+  `2026-11-17` → tanggal itu; `2026-11`/`Nov 2026`/`November 2026` → tanggal 1 bulan itu;
+  `Q3 2026` → tanggal 1 kuartal itu; `ASAP`/`Flexible`/`Early next month` → `null`.
+  Nama bulan Indonesia ikut dikenali (kontrak hanya menyebut yang Inggris).
+- `status = NEW`, `ipHash`, `userAgent`, plus satu baris `ActivityLog`
+  (`kind: INQUIRY`, `actorId: null`) dalam transaksi yang sama.
+
+### IP pengunjung dan `ipHash`
+
+Pemanggil rute ini selalu server Next, jadi `request.ip` bukan IP pengunjung.
+Next meneruskannya lewat `X-Client-Ip` (dan `X-Client-User-Agent`), dan header itu
+**hanya dipercaya bila `X-Internal-Key` valid** (ADR K7, §1.2) — tanpa itu header
+diabaikan dan IP koneksi yang dipakai.
+
+Yang disimpan adalah `ipHash`, bukan IP mentah (§6.11), dan hash-nya
+**ber-kunci**: `HMAC-SHA256(INTERNAL_API_KEY, "ip:" + ip)`. SHA-256 polos atas IP
+bukan perlindungan — ruang IPv4 hanya 2^32 nilai, jadi dump DB bisa dibalik
+dengan tabel pelangi. Konsekuensi yang disadari: **merotasi `INTERNAL_API_KEY`
+mengubah semua `ipHash` berikutnya**, sehingga jendela rate limit yang sedang
+berjalan ikut ter-reset. Itu diterima karena `ipHash` memang berumur pendek
+(30 hari) dan hanya dipakai untuk anti-spam.
+
+### Rate limit per `ipHash` (§2.3)
+
+| Rute | Batas |
+| --- | --- |
+| `POST /public/inquiries` | 5 / jam **dan** 20 / hari |
+| `POST /public/inquiry-uploads` | 15 / jam |
+| `POST /public/articles/:slug/comments` | 5 / 10 menit **dan** 30 / hari |
+
+Dua jendela sekaligus tidak bisa dinyatakan dengan satu `max` + satu
+`timeWindow`, dan kuncinya `ipHash` (baru diketahui di dalam handler) — karena
+itu batas ini memakai `AttemptThrottle`, bukan `@fastify/rate-limit`. Request
+yang sudah ditolak jendela pendek **tidak** menghabiskan kuota jendela panjang,
+dan `Retry-After` memakai sisa terlama dari semua jendela.
+
+Batasannya sama dengan store rate limit bawaan: **state per proses**, hilang saat
+restart, dan berlipat bila API di-scale-out. Jaring pengaman per IP koneksi tetap
+ada dari `publicWriteAccess()`.
+
+### Honeypot (A6)
+
+Form publik punya field `website` yang disembunyikan dan harus tetap kosong.
+Terisi → **respons sukses palsu**: `201` dengan `reference` acak yang tidak
+pernah tersimpan, atau `202 { status: "PENDING" }` tanpa komentar. Tidak ada
+baris yang dibuat, dan kunci idempotensinya pun tidak dipakai — bot tidak
+mendapat sinyal apa pun untuk dipelajari. Yang tercatat hanya satu baris log
+`info` tanpa isi body.
+
+Honeypot dicek **sebelum** artikel dicari, sehingga bot juga tidak bisa memakai
+endpoint ini untuk menebak artikel mana yang sedang draf.
+
+### Idempotensi (§1.8)
+
+`Idempotency-Key` (16–128 karakter) **wajib** di kedua submit. Server menyimpan
+`(key, rute, ipHash) → status + body respons` selama 24 jam di tabel
+`idempotency_record` (migrasi `…_idempotensi_submit_publik`).
+
+Tabel sendiri, bukan kolom di `inquiry`/`comment`, karena penguncinya harus ada
+*sebelum* baris domain dibuat — indeks unik `(scope, actor, key)`-lah yang
+memutuskan siapa yang menang saat dua request tiba bersamaan. Dan bukan peta di
+memori seperti `AttemptThrottle`, karena yang hilang saat restart di sini bukan
+sekadar hitungan percobaan melainkan jaminan "tidak ada baris ganda".
+
+| Situasi | Respons |
+| --- | --- |
+| Kunci baru | Handler dijalankan, hasilnya disimpan |
+| Kunci sama + body sama, sudah selesai | Respons tersimpan + `Idempotent-Replayed: true` |
+| Kunci sama + body sama, masih berjalan | `409 IDEMPOTENCY_IN_PROGRESS` |
+| Kunci sama + body berbeda | `422 IDEMPOTENCY_KEY_REUSED` |
+| Kunci sama, `ipHash` berbeda | Dianggap kunci lain (tidak pernah membaca respons orang lain) |
+
+Handler yang **gagal** menghapus barisnya lagi, sehingga kegagalan sementara
+tidak mengunci kunci itu selama 24 jam. Baris kedaluwarsa dibuang saat kunci itu
+dipakai lagi; job pembersih terjadwal belum ada (lihat "Yang belum" di bawah).
+
+### Komentar: antrean moderasi
+
+Komentar publik selalu masuk `PENDING` (§6.8) dan karena itu **tidak** muncul di
+`GET /v1/public/articles/:slug/comments`, yang hanya menampilkan `APPROVED`.
+`authorEmail` wajib (Q9) dan 🔒: ia tidak pernah keluar lewat DTO mana pun —
+tidak juga sebagai hash Gravatar.
+
+`parentId` **tidak ada** di skema input, jadi komentar publik selalu komentar
+akar; balasan bersarang (maks 1 tingkat, §3.6) hanya dibuat admin di Tahap 6.
+Kontrak §5.3 memang tidak mencantumkan `parentId` pada body publik, jadi
+mengirimnya ditolak `400` dengan `code: "unrecognized_keys"`.
+
+### Email: ditunda ke Tahap 8
+
+Keputusan pemilik: **modul Resend ditunda**, dan PR ini tidak menambah dependensi
+email. Yang ada adalah antarmuka `EmailSender` + `NoopEmailSender`
+(`modules/email/sender.ts`).
+
+Artinya notifikasi inquiry ke `SiteSetting.contactEmail` **belum benar-benar
+terkirim**. Yang sudah benar adalah tempat dan cara memanggilnya: setelah commit,
+dan hasilnya disimpan apa adanya di `Inquiry.notificationMessageId` /
+`notificationError` (`EMAIL_NOT_CONFIGURED`, atau `CONTACT_EMAIL_NOT_SET` bila
+baris `SiteSetting` belum ada). Kegagalan kirim **tidak pernah** menjadi 5xx dan
+tidak mengubah respons (ADR K4, kontrak §1.10) — inquiry tetap tersimpan dan
+admin melihat "belum terkirim" alih-alih dibuat mengira tim sudah diberi tahu.
+Menukar implementasinya nanti tidak menyentuh handler.
+
+### Lampiran: presign ditunda ke Tahap 7
+
+Kontrak §5.4 (A5) menetapkan presigned `PUT` ke R2, maks 3 berkas × 10 MB lewat
+`POST /v1/public/inquiry-uploads`, lalu `attachmentUploadIds` saat submit.
+
+Menandatangani `PUT` SigV4 membutuhkan `@aws-sdk/client-s3` +
+`s3-request-presigner` yang belum ada di dependensi, sementara `R2_*` juga belum
+terisi sehingga hasilnya tidak bisa diverifikasi terhadap R2 sungguhan. Menulis
+SigV4 sendiri tanpa bucket untuk mengujinya adalah kode kripto yang tidak pernah
+terbukti benar, jadi **penandatanganannya** ditunda ke Tahap 7 (Media), yang
+memang akan membangun presign admin.
+
+Yang **sudah** berlaku sekarang di `POST /v1/public/inquiry-uploads`: key
+internal wajib (`401`), rate limit 15/jam per `ipHash` (`429`), allowlist MIME
+PDF/JPEG/PNG (`415`), dan batas 10 MB (`413`). Request yang lolos semuanya
+dijawab `503 SERVICE_UNAVAILABLE` dengan pesan yang bisa ditampilkan —
+bukan `500`, dan bukan `201` dengan URL yang tidak bisa dipakai.
+
+Submit inquiry **tanpa** lampiran berjalan penuh. Submit dengan
+`attachmentUploadIds` dijawab `422 UPLOAD_INVALID` dengan
+`details: { reason: "NOT_FOUND", uploadId }` — persis jawaban kontrak untuk
+upload yang tidak ada atau kedaluwarsa, yang memang keadaannya: tidak ada
+`uploadId` yang pernah diterbitkan API ini.
+
+### Yang belum (menunggu tahap berikutnya)
+
+- Job harian §6.11 (mengosongkan `ipHash`/`userAgent` > 30 hari) dan pembersih
+  `idempotency_record` kedaluwarsa terjadwal.
+- Moderasi komentar & balasan admin (Tahap 6), yang juga menegakkan nesting maks
+  1 tingkat.
+- Presign R2 (Tahap 7) dan Resend (Tahap 8), lihat dua bagian di atas.
 
 ## Script
 

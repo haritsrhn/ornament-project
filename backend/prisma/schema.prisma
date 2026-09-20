@@ -1109,3 +1109,42 @@ model ActivityLog {
   @@index([createdAt])
   @@map("activity_log")
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Idempotensi submit publik (kontrak §1.8)
+// ─────────────────────────────────────────────────────────────────────────────
+
+enum IdempotencyStatus {
+  IN_PROGRESS
+  COMPLETED
+
+  @@map("idempotency_status")
+}
+
+/// Simpanan `(key, method+route, ipHash) → status + body respons` selama 24 jam
+/// (kontrak §1.8). Tabel sendiri, bukan kolom di `inquiry`/`comment`, karena
+/// baris idempotensi harus sudah ada **sebelum** baris domainnya dibuat
+/// (itulah yang mengunci pengiriman ganda) dan harus tetap ada walau yang
+/// disimpan adalah respons yang tidak membuat baris domain sama sekali.
+model IdempotencyRecord {
+  id             String            @id @default(uuid()) @db.Uuid
+  /// Nilai header `Idempotency-Key` (16–128 karakter).
+  key            String
+  /// `POST /v1/public/inquiries` — kunci yang sama di rute lain tidak bertabrakan.
+  scope          String
+  /// PRIVAT — `ipHash` pemanggil; bukan IP mentah (§6.11).
+  actor          String
+  /// SHA-256 body permintaan; body berbeda dengan key sama → 422 (§1.8).
+  requestHash    String            @map("request_hash")
+  status         IdempotencyStatus @default(IN_PROGRESS)
+  /// Status & body respons yang diputar ulang; null selama IN_PROGRESS.
+  responseStatus Int?              @map("response_status")
+  responseBody   Json?             @map("response_body")
+  createdAt      DateTime          @default(now()) @map("created_at") @db.Timestamptz
+  /// `createdAt + 24 jam`; baris kedaluwarsa dibuang saat kunci itu dipakai lagi.
+  expiresAt      DateTime          @map("expires_at") @db.Timestamptz
+
+  @@unique([scope, actor, key])
+  @@index([expiresAt])
+  @@map("idempotency_record")
+}
