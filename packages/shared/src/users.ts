@@ -7,6 +7,7 @@ import {
   userStatusSchema,
   mediaRefSchema,
 } from './auth.js';
+import { searchQuerySchema } from './common.js';
 import { dataEnvelope, dataMetaEnvelope } from './envelope.js';
 import { pageMetaSchema, pageQuerySchema } from './pagination.js';
 
@@ -116,10 +117,6 @@ export type UserSort = z.infer<typeof userSortSchema>;
 export const USER_STATUS_FILTERS = ['ACTIVE', 'REVOKED', 'ALL'] as const;
 export const userStatusFilterSchema = z.enum(USER_STATUS_FILTERS);
 export type UserStatusFilter = z.infer<typeof userStatusFilterSchema>;
-
-export const SEARCH_QUERY_MAX_LENGTH = 100;
-/** `q` kontrak §1.7: 1–100 karakter, di-trim. */
-export const searchQuerySchema = z.string().trim().min(1).max(SEARCH_QUERY_MAX_LENGTH);
 
 export const adminUsersQuerySchema = pageQuerySchema.extend({
   role: userRoleSchema.optional(),

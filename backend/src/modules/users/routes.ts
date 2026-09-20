@@ -20,6 +20,7 @@ import type { FastifyPluginAsyncZod } from 'fastify-type-provider-zod';
 
 import type { Prisma } from '../../generated/prisma/client.js';
 import { AppError, notFound } from '../../lib/errors.js';
+import { escapeLike } from '../../lib/like.js';
 import { ok } from '../../lib/http.js';
 import { adminRateLimit } from '../../lib/rate-limit.js';
 import { adminPermission, currentSession } from '../auth/guard.js';
@@ -32,15 +33,6 @@ export interface UsersRoutesOptions {
 }
 
 /** `where` dari query (kontrak §1.7). `role` dipisah agar `counts` bisa mengabaikannya. */
-/**
- * `contains` Prisma diterjemahkan ke `LIKE '%q%'`, dan `%`/`_`/`\\` di `q` akan
- * diperlakukan sebagai wildcard. Bukan celah injeksi (query tetap
- * terparameterisasi), tapi hasil pencariannya jadi tidak sesuai yang diketik.
- */
-function escapeLike(value: string): string {
-  return value.replace(/[\\%_]/g, (char) => `\\${char}`);
-}
-
 function baseWhere(query: AdminUsersQuery): Prisma.UserWhereInput {
   return {
     ...(query.status === 'ALL' ? {} : { status: query.status }),

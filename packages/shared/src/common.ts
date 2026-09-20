@@ -95,3 +95,62 @@ export type IdempotencyHeaders = z.infer<typeof idempotencyHeadersSchema>;
 
 /** Header penanda respons yang diputar ulang dari simpanan 24 jam (§1.8). */
 export const IDEMPOTENT_REPLAYED_HEADER = 'idempotent-replayed';
+
+// ── Daftar admin: flag boolean di query string (kontrak §1.7) ────────────────
+
+/**
+ * Flag boolean pada query admin (`trashed=true`, `archived=true`, …). Query
+ * selalu string, jadi nilainya dibatasi `"true"`/`"false"` — bukan `z.coerce
+ * .boolean()`, yang akan menganggap `"false"` bernilai `true`.
+ */
+export function booleanFlagSchema(defaultValue: boolean) {
+  return z
+    .enum(['true', 'false'])
+    .default(defaultValue ? 'true' : 'false')
+    .transform((value) => value === 'true');
+}
+
+// ── Aksi massal (kontrak §5: `BulkResult`) ───────────────────────────────────
+
+/** Maksimum `ids` per request aksi massal (kontrak §5). */
+export const BULK_IDS_MAX = 100;
+
+/**
+ * Hasil aksi massal. Selalu `200`, sukses parsial diizinkan (kontrak §5):
+ * `failed[].code` memakai kode katalog §1.10 seperti endpoint tunggalnya,
+ * sehingga UI bisa menjelaskan kegagalan per baris tanpa menebak.
+ */
+export const bulkResultSchema = z.object({
+  succeeded: z.array(z.uuid()),
+  failed: z.array(z.object({ id: z.uuid(), code: z.string(), message: z.string() })),
+});
+export type BulkResult = z.infer<typeof bulkResultSchema>;
+
+// ── Slug & pencarian (kontrak §1.7, model §6.1) ──────────────────────────────
+
+/** Maks 80 karakter (model §6.1). */
+export const SLUG_MAX_LENGTH = 80;
+
+/** Pola slug aktif: segmen `[a-z0-9]` dipisah satu tanda hubung. */
+export const SLUG_PATTERN = /^[a-z0-9]+(-[a-z0-9]+)*$/;
+
+/**
+ * Slug yang dikirim klien (hanya Editor+; model §6.1). Dinormalisasi huruf
+ * kecil lebih dulu supaya "Kursi-Rotan" tidak menjadi kegagalan validasi.
+ */
+export const slugInputSchema = z
+  .string()
+  .trim()
+  .toLowerCase()
+  .min(1, 'Slug wajib diisi.')
+  .max(SLUG_MAX_LENGTH, `Slug maksimal ${String(SLUG_MAX_LENGTH)} karakter.`)
+  .regex(SLUG_PATTERN, 'Slug hanya boleh huruf kecil, angka, dan tanda hubung.');
+
+export const SEARCH_QUERY_MAX_LENGTH = 100;
+
+/** `q` kontrak §1.7: 1–100 karakter, di-trim. */
+export const searchQuerySchema = z
+  .string()
+  .trim()
+  .min(1)
+  .max(SEARCH_QUERY_MAX_LENGTH, `Pencarian maksimal ${String(SEARCH_QUERY_MAX_LENGTH)} karakter.`);
