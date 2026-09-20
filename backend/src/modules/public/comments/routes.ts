@@ -16,9 +16,12 @@
  *   pernah bocor.
  * - Respons `202 { data: { status: "PENDING" } }` saja: tanpa `id`, tanpa isi,
  *   tanpa apa pun yang mengaitkan `authorEmail` 🔒 dengan komentar (§4).
- * - `parentId` tidak ada di skema input (`strictObject`), jadi komentar publik
- *   selalu komentar akar; balasan bersarang hanya dibuat admin, dengan nesting
- *   maksimal 1 tingkat (model §3.6).
+ * - `parentId` opsional (keputusan pemilik: pengunjung boleh membalas). Induk
+ *   wajib komentar **akar** yang `APPROVED` pada artikel yang sama, sehingga
+ *   nesting tetap maksimal 1 tingkat (model §3.6). Induk yang tidak memenuhi
+ *   syarat — termasuk yang masih `PENDING`/`SPAM` atau milik artikel lain —
+ *   dijawab `404` yang sama dengan induk tak dikenal, jadi status moderasi
+ *   sebuah komentar tidak pernah bocor lewat endpoint ini.
  */
 
 import {
@@ -82,11 +85,25 @@ export const publicCommentsRoutes: FastifyPluginAsyncZod<PublicCommentsRoutesOpt
           });
           if (article === null) throw notFound('Artikel tidak ditemukan.');
 
+          const parentId = request.body.parentId ?? null;
+          if (parentId !== null) {
+            const parent = await app.prisma.comment.findFirst({
+              where: {
+                id: parentId,
+                articleId: article.id,
+                status: 'APPROVED',
+                // Hanya komentar akar yang boleh dibalas → nesting maks 1 tingkat.
+                parentId: null,
+              },
+              select: { id: true },
+            });
+            if (parent === null) throw notFound('Komentar yang dibalas tidak ditemukan.');
+          }
+
           await app.prisma.comment.create({
             data: {
               articleId: article.id,
-              // Komentar publik tidak pernah menjadi balasan (lihat kepala berkas).
-              parentId: null,
+              parentId,
               authorName: request.body.authorName,
               // 🔒 Wajib (Q9), tidak pernah tampil publik.
               authorEmail: request.body.authorEmail,

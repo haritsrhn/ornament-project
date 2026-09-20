@@ -105,11 +105,20 @@ describe('publicCommentInputSchema (kontrak §5.3, Q9)', () => {
     ).toBe(false);
   });
 
-  test('`parentId` dan `status` ditolak: komentar publik selalu akar (§3.6)', () => {
-    for (const extra of [{ parentId: crypto.randomUUID() }, { status: 'APPROVED' }]) {
-      const result = publicCommentInputSchema.safeParse({ ...valid, ...extra });
-      expect(result.success).toBe(false);
-      expect(result.error?.issues[0]?.code).toBe('unrecognized_keys');
-    }
+  test('`parentId` diterima: pengunjung boleh membalas (keputusan pemilik)', () => {
+    // Syarat induk (akar, APPROVED, artikel yang sama) ditegakkan server, bukan skema.
+    expect(
+      publicCommentInputSchema.safeParse({ ...valid, parentId: crypto.randomUUID() }).success,
+    ).toBe(true);
+    expect(publicCommentInputSchema.safeParse({ ...valid, parentId: null }).success).toBe(true);
+    expect(publicCommentInputSchema.safeParse({ ...valid, parentId: 'bukan-uuid' }).success).toBe(
+      false,
+    );
+  });
+
+  test('`status` ditolak: klien tidak menentukan hasil moderasi', () => {
+    const result = publicCommentInputSchema.safeParse({ ...valid, status: 'APPROVED' });
+    expect(result.success).toBe(false);
+    expect(result.error?.issues[0]?.code).toBe('unrecognized_keys');
   });
 });

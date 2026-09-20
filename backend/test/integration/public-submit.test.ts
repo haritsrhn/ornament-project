@@ -22,6 +22,7 @@ import { createTestPrisma } from '../helpers/database.js';
 import {
   createArticle,
   createArticleCategory,
+  createComment,
   deleteJournalFixture,
   emptyJournalIds,
   type JournalFixtureIds,
@@ -57,6 +58,7 @@ const slugs = {
   draft: `artikel-draf-${s}`,
 };
 
+let publishedArticleId = '';
 let categoryId = '';
 let materialId = '';
 
@@ -95,7 +97,7 @@ beforeAll(async () => {
   const articleCategoryId = await createArticleCategory(prisma, journalIds, {
     slug: slugs.articleCategory,
   });
-  await createArticle(prisma, journalIds, {
+  publishedArticleId = await createArticle(prisma, journalIds, {
     slug: slugs.published,
     authorId: author.id,
     categoryId: articleCategoryId,
@@ -455,21 +457,92 @@ describe('POST /v1/public/articles/:slug/comments', () => {
     expect(errorBody(res).code).toBe('NOT_FOUND');
   });
 
-  test('parentId ditolak: komentar publik selalu akar (nesting maks 1 tingkat, §3.6)', async () => {
+  test('balasan pengunjung diterima bila induk komentar akar yang APPROVED', async () => {
+    const parentId = await createComment(prisma, {
+      articleId: publishedArticleId,
+      authorName: 'Induk Disetujui',
+      status: 'APPROVED',
+    });
     const res = await postComment(
       slugs.published,
       { ip: '198.51.100.35' },
       {
+        authorName: 'Pembalas',
+        authorEmail: `balasan-${s}@contoh.invalid`,
+        body: 'Balasan pengunjung.',
+        parentId,
+      },
+    );
+    expect(res.statusCode).toBe(202);
+
+    const saved = await prisma.comment.findFirstOrThrow({
+      where: { authorEmail: `balasan-${s}@contoh.invalid` },
+      select: { parentId: true, status: true, authorUserId: true },
+    });
+    // Balasan pengunjung tetap masuk antrean moderasi dan bukan balasan staf.
+    expect(saved).toEqual({ parentId, status: 'PENDING', authorUserId: null });
+  });
+
+  test('balasan atas balasan ditolak → nesting tetap maksimal 1 tingkat', async () => {
+    const rootId = await createComment(prisma, {
+      articleId: publishedArticleId,
+      authorName: 'Akar',
+      status: 'APPROVED',
+    });
+    const replyId = await createComment(prisma, {
+      articleId: publishedArticleId,
+      authorName: 'Balasan',
+      status: 'APPROVED',
+      parentId: rootId,
+    });
+    const res = await postComment(
+      slugs.published,
+      { ip: '198.51.100.36' },
+      {
         authorName: 'X',
-        authorEmail: 'x@contoh.invalid',
-        body: 'Balasan',
+        authorEmail: `nested-${s}@contoh.invalid`,
+        body: 'Balasan bertingkat.',
+        parentId: replyId,
+      },
+    );
+    expect(res.statusCode).toBe(404);
+    expect(
+      await prisma.comment.count({ where: { authorEmail: `nested-${s}@contoh.invalid` } }),
+    ).toBe(0);
+  });
+
+  test('induk yang belum disetujui dijawab 404 yang sama — status moderasi tidak bocor', async () => {
+    const pendingId = await createComment(prisma, {
+      articleId: publishedArticleId,
+      authorName: 'Menunggu',
+      status: 'PENDING',
+    });
+    const res = await postComment(
+      slugs.published,
+      { ip: '198.51.100.37' },
+      {
+        authorName: 'X',
+        authorEmail: `pending-parent-${s}@contoh.invalid`,
+        body: 'Balasan ke komentar yang belum disetujui.',
+        parentId: pendingId,
+      },
+    );
+    expect(res.statusCode).toBe(404);
+    expect(errorBody(res).code).toBe('NOT_FOUND');
+  });
+
+  test('parentId tak dikenal → 404', async () => {
+    const res = await postComment(
+      slugs.published,
+      { ip: '198.51.100.38' },
+      {
+        authorName: 'X',
+        authorEmail: `parent-asing-${s}@contoh.invalid`,
+        body: 'Balasan ke komentar asing.',
         parentId: randomUUID(),
       },
     );
-    expect(res.statusCode).toBe(400);
-    const detail = detailsOf(errorBody(res))[0];
-    expect(detail?.code).toBe('unrecognized_keys');
-    expect(detail?.path).toBe('parentId');
+    expect(res.statusCode).toBe(404);
   });
 
   test.each(['authorName', 'authorEmail', 'body'])(

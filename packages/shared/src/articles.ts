@@ -208,6 +208,13 @@ export const publicCommentInputSchema = z.strictObject({
   authorName: z.string().trim().min(1, 'Nama wajib diisi.').max(80),
   authorEmail: z.email('Email tidak valid.').max(255),
   body: z.string().trim().min(1, 'Komentar tidak boleh kosong.').max(COMMENT_BODY_MAX),
+  /**
+   * Balasan pengunjung (keputusan pemilik). Harus komentar **akar** yang sudah
+   * `APPROVED` pada artikel yang sama; nesting tetap maksimal 1 tingkat
+   * (model §3.6). Nilai yang tidak memenuhi syarat dijawab `404` yang sama
+   * dengan komentar tak dikenal, agar status moderasi tidak bocor.
+   */
+  parentId: z.uuid().nullish(),
   website: honeypotSchema,
 });
 export type PublicCommentInput = z.infer<typeof publicCommentInputSchema>;
