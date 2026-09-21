@@ -2,6 +2,8 @@
  * `@ornament/shared` — skema Zod dan tipe kontrak API (ADR K6).
  * Hanya kontrak: tanpa dependensi server, tanpa tipe Prisma.
  */
+export * from './admin-articles.js';
+export * from './admin-artisans.js';
 export * from './admin-products.js';
 export * from './admin-taxonomy.js';
 export * from './articles.js';

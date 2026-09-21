@@ -110,6 +110,19 @@ export function booleanFlagSchema(defaultValue: boolean) {
     .transform((value) => value === 'true');
 }
 
+// ── Konkurensi optimistis (kontrak §1.9) ─────────────────────────────────────
+
+/**
+ * `expectedUpdatedAt` — penjaga edit bersamaan untuk resource yang **tidak**
+ * punya nomor revisi (`Article`, `Artisan`, `Page`, `SiteSetting`, nav).
+ * Produk memakai `expectedRevision` karena ia memang menyimpan `revision`.
+ *
+ * Wajib pada `PATCH`/`PUT`: tanpa itu dua editor bisa saling menimpa tanpa ada
+ * yang tahu. Nilainya dibandingkan dengan `updatedAt` baris saat ini; berbeda →
+ * `409 EDIT_CONFLICT` dengan `details: { updatedAt, updatedBy }`.
+ */
+export const expectedUpdatedAtSchema = z.iso.datetime();
+
 // ── Aksi massal (kontrak §5: `BulkResult`) ───────────────────────────────────
 
 /** Maksimum `ids` per request aksi massal (kontrak §5). */

@@ -43,6 +43,21 @@ export const PUBLIC_ARTISAN_STATUSES = ['ACTIVE', 'FULL_CAPACITY'] as const;
 export const publicArtisanStatusSchema = z.enum(PUBLIC_ARTISAN_STATUSES);
 export type PublicArtisanStatus = z.infer<typeof publicArtisanStatusSchema>;
 
+/**
+ * Jenis dokumen pengrajin 🔒 (model §3.4, keputusan #49/#50). `IDENTITY` dan
+ * `BANK_ACCOUNT` berisi data pribadi (UU PDP): keduanya disimpan sebagai
+ * Media `PRIVATE`, bukan kolom teks, sehingga tidak perlu enkripsi per field.
+ */
+export const ARTISAN_DOCUMENT_KINDS = [
+  'CONTRACT',
+  'IDENTITY',
+  'BANK_ACCOUNT',
+  'MATERIAL_ORIGIN',
+  'OTHER',
+] as const;
+export const artisanDocumentKindSchema = z.enum(ARTISAN_DOCUMENT_KINDS);
+export type ArtisanDocumentKind = z.infer<typeof artisanDocumentKindSchema>;
+
 export const ARTICLE_STATUSES = ['DRAFT', 'SCHEDULED', 'PUBLISHED'] as const;
 export const articleStatusSchema = z.enum(ARTICLE_STATUSES);
 export type ArticleStatus = z.infer<typeof articleStatusSchema>;
