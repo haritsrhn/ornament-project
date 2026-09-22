@@ -341,6 +341,9 @@ describe('PATCH /v1/admin/articles/:id', () => {
     });
     expect(stale.statusCode).toBe(409);
     expect(errorBody(stale).code).toBe('EDIT_CONFLICT');
+    // `Article` tidak menyimpan penyimpan terakhir; `author` bukan jawabannya,
+    // jadi `updatedBy` harus null alih-alih menuduh penulis aslinya.
+    expect(errorBody(stale).details).toMatchObject({ updatedBy: null });
   });
 
   test('slug berubah → SlugRedirect dari slug lama ke artikel yang sama (§6.10)', async () => {
@@ -530,6 +533,47 @@ describe('publikasi terjadwal (ADR K8, model §6.6)', () => {
     });
     expect(logs).toHaveLength(1);
     expect(logs[0]?.actorId).toBeNull();
+  });
+
+  test('job tidak menyentuh updatedAt, sehingga form editor yang terbuka tetap sah', async () => {
+    const article = await createViaApi(editor.token, publishableBody(`jadwal-lock-${s}`));
+    await adminRequest(app, {
+      method: 'POST',
+      url: `/v1/admin/articles/${article.id}/publish`,
+      token: editor.token,
+      payload: { publishAt: new Date(Date.now() + 60 * 60 * 1000).toISOString() },
+    });
+    await prisma.article.update({
+      where: { id: article.id },
+      data: { publishAt: new Date(Date.now() - 1000) },
+      select: { id: true },
+    });
+
+    // Snapshot yang dipegang editor di formulirnya sesaat sebelum jadwal jatuh tempo.
+    const before = await prisma.article.findUniqueOrThrow({
+      where: { id: article.id },
+      select: { updatedAt: true },
+    });
+
+    const result = await publishScheduledArticles(prisma);
+    expect(result.slugs).toContain(article.slug);
+
+    const after = await prisma.article.findUniqueOrThrow({
+      where: { id: article.id },
+      select: { status: true, updatedAt: true },
+    });
+    expect(after.status).toBe('PUBLISHED');
+    // `updatedAt` adalah token konkurensi optimistis artikel: job sistem tidak
+    // boleh membatalkannya, karena tidak ada manusia yang mengubah isi.
+    expect(after.updatedAt.toISOString()).toBe(before.updatedAt.toISOString());
+
+    const save = await adminRequest(app, {
+      method: 'PATCH',
+      url: `/v1/admin/articles/${article.id}`,
+      token: editor.token,
+      payload: { expectedUpdatedAt: before.updatedAt.toISOString(), title: `Sunting ${s}` },
+    });
+    expect(save.statusCode).toBe(200);
   });
 
   test('artikel terjadwal di Trash tidak pernah diterbitkan job', async () => {

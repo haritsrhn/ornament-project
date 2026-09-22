@@ -334,11 +334,19 @@ export const adminArticlesRoutes: FastifyPluginAsyncZod<AdminArticlesRoutesOptio
         await restoreArticle(app.prisma, { actor, articleId: id });
         return;
       }
-      default: {
+      case 'PURGE': {
         requirePermission('article.purge');
         await loadOwnership(id);
         await purgeArticle(app.prisma, { actor, articleId: id });
         return;
+      }
+      default: {
+        /**
+         * Aksi baru di `ARTICLE_BULK_ACTIONS` wajib ditangani eksplisit: tanpa
+         * cabang ini `default` akan diam-diam memetakannya ke hapus permanen.
+         */
+        const exhaustive: never = action;
+        throw new AppError('BAD_REQUEST', `Aksi massal tidak dikenal: ${String(exhaustive)}`);
       }
     }
   }

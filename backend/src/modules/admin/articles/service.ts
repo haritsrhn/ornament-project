@@ -332,7 +332,6 @@ export async function updateArticle(
           status: true,
           updatedAt: true,
           deletedAt: true,
-          author: { select: { id: true, name: true } },
         },
       });
 
@@ -343,8 +342,11 @@ export async function updateArticle(
           'PUBLISHED',
         ]);
       }
+      // `Article` tidak menyimpan siapa penyimpan terakhir, dan `author` bukan
+      // jawaban atas "siapa yang mengubah": editor lain bisa menyimpan tanpa
+      // mengganti `authorId`. Biarkan `updatedBy` null seperti jalur pengrajin.
       assertUpdatedAtMatches(
-        { updatedAt: current.updatedAt, updatedBy: current.author },
+        { updatedAt: current.updatedAt },
         expectedUpdatedAt,
         'Artikel sudah diubah orang lain. Muat ulang sebelum menyimpan.',
       );

@@ -48,8 +48,7 @@ export async function publishScheduledArticles(
     const rows = await tx.$queryRaw<{ id: string; slug: string; title: string }[]>(Prisma.sql`
       UPDATE "article"
       SET "status" = 'PUBLISHED',
-          "published_at" = COALESCE("published_at", "publish_at"),
-          "updated_at" = ${now}::timestamptz
+          "published_at" = COALESCE("published_at", "publish_at")
       WHERE "status" = 'SCHEDULED'
         AND "deleted_at" IS NULL
         AND "publish_at" IS NOT NULL

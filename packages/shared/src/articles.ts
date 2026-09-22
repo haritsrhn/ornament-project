@@ -31,12 +31,26 @@ import { filterSlugSchema } from './products.js';
  * publik, dan frontend mendapat union yang bisa ditelusuri per `type`.
  */
 
+/**
+ * Skema tautan yang boleh muncul di isi artikel.
+ *
+ * Isi artikel ditulis peran serendah CONTRIBUTOR dan disajikan apa adanya ke
+ * jurnal publik maupun pratinjau admin, jadi `href` divalidasi di kontrak
+ * — bukan di renderer — agar `javascript:`/`data:` (XSS tersimpan) dan
+ * `//evil.tld` (open redirect protokol-relatif) tidak pernah tersimpan.
+ */
+const ARTICLE_HREF_PATTERN = /^(?:https?:\/\/|mailto:|\/(?!\/)|#)/i;
+
 /** Potongan teks dengan mark `bold`/`italic`/tautan (model §3.6: `RichInline`). */
 export const richInlineSchema = z.object({
   text: z.string(),
   bold: z.boolean().optional(),
   italic: z.boolean().optional(),
-  href: z.string().optional(),
+  href: z
+    .string()
+    .max(2048)
+    .regex(ARTICLE_HREF_PATTERN, 'Tautan harus http(s), mailto, path relatif, atau anchor.')
+    .optional(),
 });
 export type RichInline = z.infer<typeof richInlineSchema>;
 
