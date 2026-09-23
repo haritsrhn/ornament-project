@@ -480,6 +480,8 @@ export const PUBLISH_REQUIREMENT_CODES = {
   REQUIRED: 'required',
   /** Pengrajin yang dipilih sudah diarsipkan (model §6.3). */
   ARTISAN_ARCHIVED: 'artisan_archived',
+  /** Media yang dipakai konten terbit belum punya `alt` (model §6.6). */
+  ALT_REQUIRED: 'alt_required',
 } as const;
 
 /** `details.rule` pada `422 BUSINESS_RULE_VIOLATION` di §5.6. */

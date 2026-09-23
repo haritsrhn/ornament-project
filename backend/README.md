@@ -41,6 +41,7 @@ src/
   lib/like.ts          escapeLike() — meloloskan %/_/\ pada pencarian `q` ILIKE (§1.7)
   lib/slug.ts          slugify()/uniqueSlug()/uniqueCopySlug() — aturan slug model §6.1/§6.3
   lib/prisma-error.ts  P2002 → `409 CONFLICT` + details.fields (nama indeks driver adapter)
+  lib/edit-conflict.ts expectedUpdatedAt → 409 EDIT_CONFLICT untuk resource tanpa nomor revisi (§1.9)
   modules/auth/session.ts        service sesi: token 32 byte, SHA-256 di DB, sliding refresh
   modules/auth/cookie.ts         atribut cookie __Host-osa_session di satu tempat
   modules/auth/guard.ts          app.requireSession / app.requireRole(...)
@@ -58,13 +59,25 @@ src/
   modules/public/site/           situs publik: settings, menu, halaman & blok, sitemap, redirect
   modules/public/inquiries/      submit inquiry + presign lampiran (kontrak §5.4)
   modules/public/comments/       submit komentar journal → antrean moderasi (kontrak §5.3)
-  modules/admin/products/access.ts   batas kepemilikan/status Contributor (403 NOT_OWNER/NOT_DRAFT)
+  modules/admin/ownership.ts         primitif batas kepemilikan/status Contributor (403 NOT_OWNER/NOT_DRAFT)
+  modules/admin/slug-redirect.ts     SlugRedirect produk & artikel dalam satu aturan (model §6.10)
+  modules/admin/tags.ts              resolveTagIds() — tabel `Tag` yang sama untuk produk & artikel
+  modules/admin/products/access.ts   penerjemah baris produk ke primitif kepemilikan di atas
   modules/admin/products/dto.ts      DTO admin produk + syarat publish §6.3 (publishReadiness)
   modules/admin/products/service.ts  tulis produk: slug, SKU, stok, revisi, Trash, duplikat, redirect
   modules/admin/products/sku.ts      saran SKU §6.2 (sequence Postgres + YYMM zona SiteSetting)
   modules/admin/products/routes.ts   rute /v1/admin/products/* (kontrak §5.6)
   modules/admin/taxonomy/dto.ts      DTO kategori (produk & artikel), material, tag
   modules/admin/taxonomy/routes.ts   rute /v1/admin/categories|materials|tags (kontrak §5.7)
+  modules/admin/artisans/dto.ts      DTO admin pengrajin: AdminArtisan (🔒) vs ArtisanRedacted
+  modules/admin/artisans/service.ts  tulis pengrajin: slug, galeri, arsip §6.7, dokumen 🔒
+  modules/admin/artisans/routes.ts   rute /v1/admin/artisans/* (kontrak §5.8)
+  modules/admin/articles/access.ts   batas kepemilikan/status artikel (Contributor: draf miliknya)
+  modules/admin/articles/dto.ts      DTO admin artikel + hitungan komentar per status
+  modules/admin/articles/preview.ts  pratinjau: DTO publik tanpa menyimpan (kontrak §5.9)
+  modules/admin/articles/service.ts  tulis artikel: slug+redirect, wordCount, jadwal, Trash
+  modules/admin/articles/routes.ts   rute /v1/admin/articles/* (kontrak §5.9)
+  modules/jobs/publish-scheduled.ts  job 60 detik SCHEDULED → PUBLISHED (ADR K8, model §6.6)
   modules/email/sender.ts        antarmuka EmailSender + NoopEmailSender (Resend ditunda, ADR K4)
   plugins/prisma.ts    registerPrisma() — decorate app.prisma + $disconnect saat onClose
   plugins/validation.ts  validator/serializer Zod, locale pesan Indonesia, hanya body JSON
@@ -1207,6 +1220,168 @@ pada `P2002`; yang tersedia hanya nama indeks Postgres di
 `lib/prisma-error.ts` menerjemahkannya menjadi nama field kontrak
 (`details.fields: ["skuCode"]`). Tanpa itu setiap konflik jatuh ke tebakan
 default dan UI menyorot field yang salah.
+
+## Admin pengrajin (`/v1/admin/artisans/*`)
+
+Kontrak §5.8, model §3.4 & §6.7. Berbeda dengan produk dan artikel, pengrajin
+**tidak** punya batas kepemilikan: matriks §3.1 menempatkannya sebagai "tulis
+Editor+, Contributor hanya lihat". Yang bercabang per peran adalah **bentuk
+DTO-nya**.
+
+| Method & path | Penanda izin | Catatan |
+| --- | --- | --- |
+| `GET /admin/artisans` | `adminSession()` | Nomor halaman + `meta.counts` per `ArtisanStatus` + `archived` |
+| `POST /admin/artisans` | `artisan.write` | `status` **selalu** `VERIFICATION` |
+| `GET /admin/artisans/:id` | `adminSession()` | Editor+: `AdminArtisan`; Contributor: `ArtisanRedacted` |
+| `PATCH /admin/artisans/:id` | `artisan.write` | `expectedUpdatedAt` wajib (§1.9) |
+| `POST /admin/artisans/:id/archive` \| `/unarchive` | `artisan.write` | Arsip memberi `warnings`, bukan menolak (A10) |
+| `GET /admin/artisans/:id/documents` | `artisan.read_private` | Editor+ saja |
+| `POST \| PATCH \| DELETE .../documents[/:documentId]` | `artisan.write` | Berkas wajib Media `PRIVATE` |
+| `GET .../documents/:documentId/url` | `artisan.read_private` | Presigned GET; lihat catatan R2 di bawah |
+
+### Field 🔒: dihapus, bukan dijadikan `null`
+
+`ArtisanRedacted` **tidak memuat** `contactName`, `phone`, `address`, dan
+`internalNotes` sama sekali. Bedanya bukan kosmetik: `null` berarti "belum
+diisi" dan akan membuat UI Contributor menampilkan field telepon yang seolah
+menunggu diisi, sementara yang benar adalah "bukan urusan Anda".
+
+Kedua DTO dibangun dari fungsi yang sama (`toArtisanRedacted()`), lalu
+`toAdminArtisan()` menambahkan empat field 🔒 di atasnya. Karena itu menambah
+field publik baru tidak bisa membuat keduanya menyimpang, dan satu-satunya jalan
+field 🔒 masuk respons adalah lewat cabang Editor+ di `routes.ts`.
+
+### Arsip (§6.7, A10)
+
+Mengarsipkan pengrajin yang masih punya produk terbit **diizinkan**. Responsnya
+memuat `warnings: [{ code: "HAS_PUBLISHED_PRODUCTS", count }]`, dan akibatnya:
+
+- `/v1/public/artisans/:slug` → `404` (profilnya hilang dari situs);
+- produknya **tetap tayang** di katalog;
+- di detail produk publik, pengrajin muncul ringkas **tanpa tautan**
+  (`slug: null`), sehingga tidak ada pranala menuju halaman 404.
+
+Pengrajin yang diarsipkan tidak bisa di-`PATCH` (`409 INVALID_STATE`); pulihkan
+dulu dari arsip. `unarchive` **mempertahankan** `status` — arsip bukan status
+publikasi, jadi memulihkan tidak boleh diam-diam mengubah profil `ACTIVE`
+menjadi sesuatu yang lain.
+
+Menghapus pengrajin tidak tersedia (model D3). Slug pengrajin **tidak** menulis
+`SlugRedirect`: model §6.10 membatasinya pada `Product` dan `Article`.
+
+### Dokumen 🔒 dan URL berdurasi pendek
+
+`ArtisanDocument` menunjuk Media `PRIVATE` (keputusan #49/#50): KTP dan nomor
+rekening diunggah sebagai berkas `IDENTITY`/`BANK_ACCOUNT`, bukan kolom teks,
+sehingga tidak perlu enkripsi tingkat field. Server menegakkan kebalikan dari
+aturan media publik:
+
+- media `PUBLIC` sebagai dokumen → `422 MEDIA_NOT_PRIVATE`;
+- media yang sudah menjadi dokumen lain → `422 MEDIA_ALREADY_USED` (aturan
+  tambahan di luar daftar kontrak §5.8: satu berkas privat hanya boleh punya
+  satu pemilik, supaya menghapus dokumen tidak membuat dokumen lain kehilangan
+  berkasnya);
+- menghapus dokumen memindahkan **Media**-nya ke Trash (pemulihan 30 hari §6.4),
+  bukan menghapus objek R2.
+
+`GET .../documents/:documentId/url` menegakkan seluruh kontrak di sekelilingnya
+(izin Editor+, dokumen harus milik pengrajin yang diminta, `404` untuk yang
+bukan) lalu menjawab **`503 SERVICE_UNAVAILABLE`**: penandatanganan presigned
+GET ditunda ke Tahap 7 bersama modul media, dengan alasan yang sama seperti
+presign lampiran inquiry (SigV4 tanpa bucket untuk mengujinya adalah kode
+kripto yang tidak pernah terbukti benar). Yang dijawab bukan `500`, dan bukan
+`200` dengan URL yang tidak bisa dipakai.
+
+## Admin artikel (`/v1/admin/articles/*`)
+
+Kontrak §5.9, model §3.6 & §6.6. Dua lapis izin yang sama dengan produk;
+"draf" untuk artikel berarti `status === 'DRAFT'`, jadi artikel `SCHEDULED`
+sudah di luar jangkauan Contributor.
+
+| Method & path | Penanda izin | Catatan |
+| --- | --- | --- |
+| `GET /admin/articles` | `adminSession()` | `meta.counts`: `all`, `DRAFT`, `SCHEDULED`, `PUBLISHED`, `trash` |
+| `POST /admin/articles` | `article.write_draft` | `DRAFT`, penulis = diri sendiri; juga "Draf cepat" (Q1) |
+| `POST /admin/articles/bulk` | `article.write_draft` | Izin dicek **per item**; `BulkResult` |
+| `GET /admin/articles/:id` | `adminSession()` | Termasuk yang di Trash |
+| `PATCH /admin/articles/:id` | `article.write_draft` | `expectedUpdatedAt` wajib (§1.9) |
+| `POST /admin/articles/:id/publish` \| `/unpublish` | `article.publish` | `publishAt` masa depan = `SCHEDULED` |
+| `POST /admin/articles/:id/preview` | `article.write_draft` | DTO publik **tanpa menyimpan** |
+| `DELETE /admin/articles/:id` | `article.write_draft` | Trash; katalog `Permission` tidak punya `article.trash` |
+| `POST /admin/articles/:id/restore` | `article.restore` | **Selalu** `DRAFT`, `publishAt = null` (Q3) |
+| `DELETE /admin/articles/:id/permanent` | `article.purge` | Administrator saja (A3); komentar ikut terhapus |
+
+Contributor yang mengirim `slug` atau `authorId` ditolak `403 FORBIDDEN_FIELD`:
+URL publik adalah keputusan Editor+ (§6.1), dan `authorId` akan memindahkan
+kepemilikan — dan dengan itu batas A1 — ke orang lain.
+
+### Isi berbasis blok
+
+`Article.content` divalidasi `articleContentInputSchema` di `@ornament/shared`:
+skema blok **yang sama** dengan yang dipakai journal publik, ditambah syarat
+`id` blok unik. Blok bertipe tak dikenal, `mediaId` bukan UUID, atau id ganda
+ditolak `400 VALIDATION_FAILED` sebelum menyentuh database — tidak ada bentuk
+yang bisa tersimpan lewat editor admin lalu dibuang diam-diam saat dirender.
+
+`wordCount` diturunkan saat simpan dengan `countArticleWords()` dari paket
+bersama, sehingga angka "Kata: 612" di editor persis sama dengan yang tersimpan.
+
+### Syarat publish (§6.6)
+
+`title`, `categoryId`, `content` tidak kosong, dan **alt pada gambar** — gambar
+unggulan maupun setiap blok gambar, karena keduanya dirender publik. `details`
+pada `422 PUBLISH_REQUIREMENTS_NOT_MET` memakai path per blok
+(`content[2].mediaId`, `code: "alt_required"`) agar editor bisa menyorot blok
+yang salah. `PATCH` pada artikel yang sudah terbit/terjadwal ikut diperiksa,
+jadi `categoryId: null` tidak bisa menjadi pintu belakang.
+
+Menjadwalkan ke waktu yang sudah lewat → `422 BUSINESS_RULE_VIOLATION`
+(`rule: "PUBLISH_AT_IN_PAST"`); kosongkan `publishAt` untuk terbit sekarang.
+
+### Pratinjau
+
+`POST /:id/preview` menumpuk body parsial (isi editor yang belum disimpan) di
+atas baris tersimpan, lalu melewatkannya ke transformasi DTO publik **yang
+sama** dengan `/v1/public/articles/:slug`. Itu disengaja: pratinjau dengan
+aturan sendiri akan berbohong justru di tempat yang paling mahal — blok gambar
+yang medianya `PRIVATE`/hilang dibuang di publik, `excerpt` kosong diturunkan
+dari paragraf pertama, dan `mediaId` ditukar `PublicMedia`.
+
+Tidak ada baris yang ditulis: tag baru di body hanya dihitung slugnya
+(`slugify()`), bukan dibuat. `commentCount` selalu `0`, dan artikel yang belum
+terbit dipratinjau seolah terbit sekarang.
+
+### Draf cepat dashboard (Q1)
+
+Kartu "Draf cepat" memakai endpoint `POST /admin/articles` yang sama — tidak ada
+rute khusus. Catatan diubah menjadi blok `paragraph` pertama dengan
+`quickDraftContent()` di `@ornament/shared`, hasilnya `DRAFT` dengan
+`categoryId: null`, dan responsnya memuat `data.id` yang dipakai UI untuk
+menautkan ke `/admin/articles/<id>`.
+
+### Publikasi terjadwal (ADR K8)
+
+Query publik **sudah** menganggap `SCHEDULED && publishAt <= now()` sebagai
+terbit, jadi artikel tayang tepat waktu tanpa job. Yang dikerjakan job adalah
+merapikan *state*: memindahkan status ke `PUBLISHED` dan mengisi `publishedAt`
+dari `publishAt`, sehingga daftar admin, hitungan tab, dan urutan `-publishedAt`
+tidak perlu mengulang aturan "sudah jatuh tempo" di setiap tempat.
+
+- **Satu `UPDATE ... WHERE status = 'SCHEDULED' ... RETURNING`**. Dua instance
+  yang berjalan bersamaan saling menunggu di row lock, lalu yang kalah
+  memperbarui **nol** baris — tidak ada tabel lock dan tidak ada leader election.
+- **Idempoten**: putaran kedua tanpa jadwal baru mengembalikan
+  `{ published: 0 }` dan tidak menulis `ActivityLog`.
+- **Berhenti saat shutdown** lewat hook `onClose`, dan timernya `unref()` supaya
+  tidak pernah menahan proses tetap hidup.
+- **Tidak mengganggu tes**: `buildApp({ scheduledPublish: false })` mematikannya,
+  dan defaultnya hanya aktif bila `config` diberikan (yaitu `src/server.ts`).
+  Tes memanggil `publishScheduledArticles(prisma)` langsung alih-alih menunggu
+  interval 60 detik.
+
+Endpoint cron eksternal `POST /v1/internal/jobs/publish-scheduled` (kontrak
+§5.17) **belum** ada; seluruh `/v1/internal/*` menyusul bersama modul job
+eksternal.
 
 ## Script
 

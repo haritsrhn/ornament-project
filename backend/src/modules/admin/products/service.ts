@@ -28,6 +28,11 @@ import { AppError, badRequest, businessRuleViolation, conflict } from '../../../
 import { isUniqueViolation, uniqueConflictFields } from '../../../lib/prisma-error.js';
 import { slugify, uniqueCopySlug, uniqueSlug } from '../../../lib/slug.js';
 import {
+  recordSlugRedirect as recordRedirect,
+  releaseSlugRedirect as releaseRedirect,
+} from '../slug-redirect.js';
+import { resolveTagIds } from '../tags.js';
+import {
   adminProductSelect,
   publishRequirementIssues,
   toAdminProduct,
@@ -166,60 +171,16 @@ export function asConflict(error: unknown): never {
 
 // ── Redirect slug lama (model §6.10, Q8) ─────────────────────────────────────
 
-/**
- * Dipanggil **dalam transaksi yang sama** dengan perubahan slug:
- * 1. catat slug lama sebagai `SlugRedirect`;
- * 2. hapus redirect bertipe sama yang `fromSlug`-nya = slug **baru** — slug
- *    aktif selalu menang, jadi URL yang kini hidup tidak boleh mengalihkan.
- */
-export async function recordSlugRedirect(
+/** Aturannya sama untuk produk dan artikel; lihat `modules/admin/slug-redirect.ts`. */
+export const recordSlugRedirect = (
   tx: Tx,
   productId: string,
   oldSlug: string,
   newSlug: string,
-): Promise<void> {
-  if (oldSlug === newSlug) return;
+): Promise<void> => recordRedirect(tx, 'PRODUCT', productId, oldSlug, newSlug);
 
-  await tx.slugRedirect.deleteMany({ where: { type: 'PRODUCT', fromSlug: newSlug } });
-  // Slug lama mungkin sudah tercatat (A → B → A → B). `upsert` menjaga
-  // barisnya menunjuk produk terkini alih-alih gagal di constraint unik.
-  await tx.slugRedirect.upsert({
-    where: { type_fromSlug: { type: 'PRODUCT', fromSlug: oldSlug } },
-    create: { type: 'PRODUCT', fromSlug: oldSlug, productId },
-    update: { productId },
-  });
-}
-
-/** Membuat/memulihkan slug yang tercatat sebagai `fromSlug` ikut menghapusnya (§6.10). */
-async function releaseRedirectFor(tx: Tx, slug: string): Promise<void> {
-  await tx.slugRedirect.deleteMany({ where: { type: 'PRODUCT', fromSlug: slug } });
-}
-
-// ── Tag (model §3.3: dipakai ulang, tidak diduplikasi) ───────────────────────
-
-async function resolveTagIds(tx: Tx, names: readonly string[]): Promise<string[]> {
-  const bySlug = new Map<string, string>();
-  for (const name of names) {
-    const slug = slugify(name);
-    if (slug === '') continue;
-    if (!bySlug.has(slug)) bySlug.set(slug, name.trim());
-  }
-  if (bySlug.size === 0) return [];
-
-  const ids: string[] = [];
-  for (const [slug, name] of bySlug) {
-    // `upsert` alih-alih find-then-create: dua penyimpanan bersamaan dengan
-    // tag baru yang sama tidak boleh salah satunya gagal di kolom unik.
-    const tag = await tx.tag.upsert({
-      where: { slug },
-      create: { slug, name },
-      update: {},
-      select: { id: true },
-    });
-    ids.push(tag.id);
-  }
-  return ids;
-}
+const releaseRedirectFor = (tx: Tx, slug: string): Promise<void> =>
+  releaseRedirect(tx, 'PRODUCT', slug);
 
 // ── Stok (model §6.3 Q13, A11) ───────────────────────────────────────────────
 

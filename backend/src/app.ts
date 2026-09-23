@@ -5,9 +5,12 @@ import Fastify, { LogController, type FastifyInstance } from 'fastify';
 import type { Env } from './config/env.js';
 import type { PrismaClient } from './generated/prisma/client.js';
 import { NoopEmailSender, type EmailSender } from './modules/email/sender.js';
+import { adminArticlesRoutes } from './modules/admin/articles/routes.js';
+import { adminArtisansRoutes } from './modules/admin/artisans/routes.js';
 import { adminProductsRoutes } from './modules/admin/products/routes.js';
 import { adminTaxonomyRoutes } from './modules/admin/taxonomy/routes.js';
 import { registerAuthGuard } from './modules/auth/guard.js';
+import { registerScheduledPublish } from './modules/jobs/publish-scheduled.js';
 import type { LoginThrottle, PasswordChangeThrottle } from './modules/auth/login-throttle.js';
 import { authRoutes } from './modules/auth/routes.js';
 import { invitesRoutes } from './modules/invites/routes.js';
@@ -77,6 +80,18 @@ export interface BuildAppOptions {
    * membangun seluruh `Env`.
    */
   internalApiKey?: string | undefined;
+  /**
+   * Job publikasi terjadwal in-process (ADR K8, model §6.6). Default: **aktif
+   * hanya bila `config` diberikan**, yaitu saat proses ini memang server yang
+   * berumur panjang (`src/server.ts`). Tes membangun app dengan `prisma`
+   * langsung, jadi tidak ada timer yang ikut hidup dan hasil tes tidak pernah
+   * bergantung pada kapan job kebetulan berjalan — job diuji dengan
+   * memanggilnya sendiri.
+   *
+   * `false` mematikannya secara eksplisit; objek `{ intervalMs }` memperpendek
+   * interval (dipakai tes yang ingin membuktikan timernya benar-benar jalan).
+   */
+  scheduledPublish?: boolean | { intervalMs?: number };
 }
 
 /**
@@ -154,6 +169,8 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
   });
   void app.register(usersRoutes, { prefix: '/v1', ...mediaPublicUrl });
   void app.register(adminProductsRoutes, { prefix: '/v1', ...mediaPublicUrl });
+  void app.register(adminArtisansRoutes, { prefix: '/v1', ...mediaPublicUrl });
+  void app.register(adminArticlesRoutes, { prefix: '/v1', ...mediaPublicUrl });
   void app.register(adminTaxonomyRoutes, { prefix: '/v1' });
   void app.register(invitesRoutes, {
     prefix: '/v1',
@@ -170,6 +187,11 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
         : { internalApiKey: config.INTERNAL_API_KEY }
       : { internalApiKey: options.internalApiKey }),
   });
+
+  const scheduledPublish = options.scheduledPublish ?? config !== undefined;
+  if (scheduledPublish !== false && app.hasDecorator('prisma')) {
+    registerScheduledPublish(app, scheduledPublish === true ? {} : scheduledPublish);
+  }
 
   return app;
 }

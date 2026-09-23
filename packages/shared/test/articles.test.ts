@@ -63,6 +63,37 @@ describe('articleBlockSchema', () => {
   });
 });
 
+describe('href pada RichInline (skema tautan isi artikel)', () => {
+  const paragraph = (href: string) => [
+    { id: 'p1', type: 'paragraph', text: [{ text: 'T', href }] },
+  ];
+
+  test.each([
+    'https://studio.se/kursi',
+    'http://studio.se',
+    'mailto:halo@studio.se',
+    '/journal/rotan',
+    '#bagian-2',
+  ])('menerima %s', (href) => {
+    expect(articleContentSchema.safeParse(paragraph(href)).success).toBe(true);
+  });
+
+  test.each([
+    'javascript:alert(1)',
+    'JaVaScRiPt:alert(1)',
+    'data:text/html;base64,PHNjcmlwdD4=',
+    '//evil.tld/phishing',
+    'vbscript:msgbox(1)',
+  ])('menolak %s', (href) => {
+    expect(articleContentSchema.safeParse(paragraph(href)).success).toBe(false);
+  });
+
+  test('menolak href lebih panjang dari 2048 karakter', () => {
+    const href = `https://studio.se/${'a'.repeat(2048)}`;
+    expect(articleContentSchema.safeParse(paragraph(href)).success).toBe(false);
+  });
+});
+
 describe('href turunan situs publik', () => {
   test('redirect memakai prefiks per tipe (kontrak §5.5)', () => {
     expect(publicRedirectPath('PRODUCT', 'kursi-rotan')).toBe('/produk/kursi-rotan');
