@@ -24,6 +24,7 @@ import {
   type CatalogFixtureIds,
 } from '../helpers/catalog.js';
 import { createTestPrisma } from '../helpers/database.js';
+import { createFakeR2 } from '../helpers/r2.js';
 
 /**
  * Admin pengrajin (#26) terhadap database tes — kontrak §5.8, model §6.7.
@@ -51,6 +52,8 @@ let categoryId = '';
 
 interface Session {
   id: string;
+  email: string;
+  password: string;
   token: string;
 }
 let admin: Session;
@@ -60,7 +63,12 @@ let contributor: Session;
 async function makeSession(role: 'ADMINISTRATOR' | 'EDITOR' | 'CONTRIBUTOR'): Promise<Session> {
   const user = await createTestUser(prisma, { role, localPart: `art-${role.toLowerCase()}` });
   userIds.push(user.id);
-  return { id: user.id, token: await loginToken(app, user.email, user.password) };
+  return {
+    id: user.id,
+    email: user.email,
+    password: user.password,
+    token: await loginToken(app, user.email, user.password),
+  };
 }
 
 const artisanOf = (res: LightMyRequestResponse): AdminArtisan =>
@@ -500,7 +508,7 @@ describe('dokumen 🔒 (kontrak §5.8, model §3.4)', () => {
     expect(documentsOf(list).map((item) => item.id)).toEqual([document.id]);
   });
 
-  test('URL akses berdurasi pendek menegakkan kontrak, lalu 503 selama R2 belum ada', async () => {
+  test('URL akses berdurasi pendek: 404 untuk dokumen pengrajin lain, 503 tanpa R2, presigned bila ada', async () => {
     const artisan = await createViaApi(`url-dokumen-${s}`);
     const created = await adminRequest(app, {
       method: 'POST',
@@ -524,8 +532,35 @@ describe('dokumen 🔒 (kontrak §5.8, model §3.4)', () => {
       url: `/v1/admin/artisans/${artisan.id}/documents/${document.id}/url`,
       token: editor.token,
     });
+    // App utama dibangun tanpa R2, jadi seluruh kontrak di sekelilingnya
+    // berlaku dan yang tersisa hanya penandatanganannya.
     expect(res.statusCode).toBe(503);
     expect(errorBody(res).code).toBe('SERVICE_UNAVAILABLE');
+
+    // Dengan penyimpanan terpasang, dokumen 🔒 dibuka lewat presigned GET yang
+    // kedaluwarsa — bukan URL permanen (kontrak §5.12, keputusan #49/#50).
+    const withStorage = buildApp({
+      prisma,
+      logger: false,
+      adminOrigin: ADMIN_ORIGIN,
+      scheduledPublish: false,
+      r2: createFakeR2(),
+    });
+    try {
+      const signed = await adminRequest(withStorage, {
+        method: 'GET',
+        url: `/v1/admin/artisans/${artisan.id}/documents/${document.id}/url?download=true`,
+        token: await loginToken(withStorage, editor.email, editor.password),
+      });
+      expect(signed.statusCode).toBe(200);
+
+      const body = signed.json<{ data: { url: string; expiresAt: string } }>().data;
+      expect(body.url).toContain('X-Amz-Signature');
+      expect(body.url).toContain('attachment');
+      expect(new Date(body.expiresAt).getTime()).toBeGreaterThan(Date.now());
+    } finally {
+      await withStorage.close();
+    }
   });
 
   test('menghapus dokumen memindahkan Media-nya ke Trash', async () => {

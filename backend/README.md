@@ -42,6 +42,9 @@ src/
   lib/slug.ts          slugify()/uniqueSlug()/uniqueCopySlug() — aturan slug model §6.1/§6.3
   lib/prisma-error.ts  P2002 → `409 CONFLICT` + details.fields (nama indeks driver adapter)
   lib/edit-conflict.ts expectedUpdatedAt → 409 EDIT_CONFLICT untuk resource tanpa nomor revisi (§1.9)
+  lib/r2.ts            presign PUT/GET, HeadObject, hapus objek + bentuk key media (ADR K3)
+  lib/upload-token.ts  uploadId bertanda tangan HMAC: presign → konfirmasi tanpa tabel sementara (§5.12)
+  lib/image-size.ts    dimensi PNG/JPEG/WebP dari header, tanpa mendekode piksel
   modules/auth/session.ts        service sesi: token 32 byte, SHA-256 di DB, sliding refresh
   modules/auth/cookie.ts         atribut cookie __Host-osa_session di satu tempat
   modules/auth/guard.ts          app.requireSession / app.requireRole(...)
@@ -77,6 +80,11 @@ src/
   modules/admin/articles/preview.ts  pratinjau: DTO publik tanpa menyimpan (kontrak §5.9)
   modules/admin/articles/service.ts  tulis artikel: slug+redirect, wordCount, jadwal, Trash
   modules/admin/articles/routes.ts   rute /v1/admin/articles/* (kontrak §5.9)
+  modules/admin/media/usage.ts       "dipakai di mana?" dari 10 sumber, termasuk blok isi artikel
+  modules/admin/media/dto.ts         DTO AdminMedia (url null untuk PRIVATE)
+  modules/admin/media/service.ts     unggah, daftar, Trash/pulih/purge (kontrak §5.12)
+  modules/admin/media/routes.ts      rute /v1/admin/media/* (kontrak §5.12)
+  modules/admin/bulk.ts              pengumpul hasil aksi massal (sukses parsial, §5)
   modules/jobs/publish-scheduled.ts  job 60 detik SCHEDULED → PUBLISHED (ADR K8, model §6.6)
   modules/email/sender.ts        antarmuka EmailSender + NoopEmailSender (Resend ditunda, ADR K4)
   plugins/prisma.ts    registerPrisma() — decorate app.prisma + $disconnect saat onClose
@@ -135,10 +143,10 @@ curl http://localhost:4000/v1/health   # {"data":{"status":"ok"}}
 `docker-compose.yml` di root menjalankan satu instance `postgres:18-alpine`
 (user/sandi `ornament`/`ornament`, hanya untuk dev) dengan dua database:
 
-| Database | Dipakai untuk | `DATABASE_URL` |
-| --- | --- | --- |
-| `ornament` | dev | `postgresql://ornament:ornament@localhost:5432/ornament?schema=public` |
-| `ornament_test` | tes | `postgresql://ornament:ornament@localhost:5432/ornament_test?schema=public` |
+| Database        | Dipakai untuk | `DATABASE_URL`                                                              |
+| --------------- | ------------- | --------------------------------------------------------------------------- |
+| `ornament`      | dev           | `postgresql://ornament:ornament@localhost:5432/ornament?schema=public`      |
+| `ornament_test` | tes           | `postgresql://ornament:ornament@localhost:5432/ornament_test?schema=public` |
 
 `ornament_test` dibuat oleh `docker/postgres-init/01-create-test-db.sql`, yang
 hanya dijalankan image Postgres saat volume **masih kosong**. Bila volume sudah
@@ -163,15 +171,15 @@ ada sebelum skrip itu, jalankan `docker compose down -v && npm run db:up`.
 Sumber kebenaran model: [`docs/domain-model.md`](docs/domain-model.md).
 Yang berlaku di `schema.prisma`:
 
-| Aspek | Aturan |
-| --- | --- |
-| Nama | Model/field camelCase Inggris (dipakai di kode); tabel, kolom, dan tipe enum di PostgreSQL **snake_case** lewat `@@map`/`@map` — SQL mentah di ADR K8 menulis `publish_at`, dan nama snake_case konsisten memudahkan query manual/psql. Tabel singular (`product`, `article`, `"user"` — dikutip karena kata kunci SQL). |
-| ID & waktu | `String @id @default(uuid()) @db.Uuid`; semua `DateTime` memakai `@db.Timestamptz` (UTC, domain model D1). |
-| Uang & ukuran | `Decimal` eksplisit: `fob_price_usd`/`budget_per_unit_usd` `DECIMAL(10,2)`, `length/width/height_cm` `DECIMAL(7,1)`, `weight_kg` `DECIMAL(7,2)`. Jangan pakai `Float` untuk uang. |
-| JSON | Rich text & blok disimpan `Json` (`product.description`, `article.content`, `artisan.story`, `page_block.config`, `product_revision.snapshot`, `activity_log.metadata`) dan divalidasi Zod di `@ornament/shared` (domain model D7). |
-| Soft delete | `deleted_at` pada `product`, `article`, `page`, `media`; `artisan` memakai `archived_at`; `comment`/`user` memakai status. Query daftar wajib menyaring sendiri. |
-| Unik | `slug` dan `sku` unik **termasuk baris di Trash** (§6.1/§6.2), jadi unik biasa — bukan unik parsial. |
-| Indeks FK | Setiap kolom FK punya indeks; Postgres tidak membuatnya otomatis dan semua aturan hapus (`Restrict`/`SetNull`/`Cascade`) serta hitungan "dipakai di mana" memeriksa sisi anak. |
+| Aspek         | Aturan                                                                                                                                                                                                                                                                                                                   |
+| ------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Nama          | Model/field camelCase Inggris (dipakai di kode); tabel, kolom, dan tipe enum di PostgreSQL **snake_case** lewat `@@map`/`@map` — SQL mentah di ADR K8 menulis `publish_at`, dan nama snake_case konsisten memudahkan query manual/psql. Tabel singular (`product`, `article`, `"user"` — dikutip karena kata kunci SQL). |
+| ID & waktu    | `String @id @default(uuid()) @db.Uuid`; semua `DateTime` memakai `@db.Timestamptz` (UTC, domain model D1).                                                                                                                                                                                                               |
+| Uang & ukuran | `Decimal` eksplisit: `fob_price_usd`/`budget_per_unit_usd` `DECIMAL(10,2)`, `length/width/height_cm` `DECIMAL(7,1)`, `weight_kg` `DECIMAL(7,2)`. Jangan pakai `Float` untuk uang.                                                                                                                                        |
+| JSON          | Rich text & blok disimpan `Json` (`product.description`, `article.content`, `artisan.story`, `page_block.config`, `product_revision.snapshot`, `activity_log.metadata`) dan divalidasi Zod di `@ornament/shared` (domain model D7).                                                                                      |
+| Soft delete   | `deleted_at` pada `product`, `article`, `page`, `media`; `artisan` memakai `archived_at`; `comment`/`user` memakai status. Query daftar wajib menyaring sendiri.                                                                                                                                                         |
+| Unik          | `slug` dan `sku` unik **termasuk baris di Trash** (§6.1/§6.2), jadi unik biasa — bukan unik parsial.                                                                                                                                                                                                                     |
+| Indeks FK     | Setiap kolom FK punya indeks; Postgres tidak membuatnya otomatis dan semua aturan hapus (`Restrict`/`SetNull`/`Cascade`) serta hitungan "dipakai di mana" memeriksa sisi anak.                                                                                                                                           |
 
 ### Alur migrasi
 
@@ -184,17 +192,17 @@ npm run db:migrate:deploy --workspace backend
 npx prisma migrate status
 ```
 
-- `prisma migrate dev` tanpa perubahan harus menjawab *"Already in sync"*. Bila
+- `prisma migrate dev` tanpa perubahan harus menjawab _"Already in sync"_. Bila
   ia menawarkan migrasi baru, ada drift antara skema dan migrasi.
 - Migrasi yang sudah di-commit **tidak diedit lagi**; perbaikan dibuat sebagai
   migrasi baru (checksum migrasi tersimpan di `_prisma_migrations`).
 
-| Migrasi | Isi |
-| --- | --- |
-| `…_model_domain_awal` | Seluruh model domain + blok SQL manual di bawah |
-| `…_invite_email_sent_at` | `invite.email_sent_at` (nullable) untuk `AdminInvite.emailSentAt` kontrak §5.13; model domain §3.1 hanya menyebut `email_message_id`/`email_error`, yang tidak bisa menjawab "kapan terkirim". Baris lama otomatis berarti "belum/gagal terkirim" |
-| `…_indeks_keyset_katalog_publik` | Indeks `product(publish_status, deleted_at, published_at DESC, id DESC)` untuk keyset katalog publik (§1.6/§5.1) |
-| `…_indeks_keyset_artikel_publik` | Dua indeks **ekspresi parsial** pada `article` untuk keyset journal publik (§1.6/§5.3); lihat §Constraint SQL manual |
+| Migrasi                          | Isi                                                                                                                                                                                                                                               |
+| -------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `…_model_domain_awal`            | Seluruh model domain + blok SQL manual di bawah                                                                                                                                                                                                   |
+| `…_invite_email_sent_at`         | `invite.email_sent_at` (nullable) untuk `AdminInvite.emailSentAt` kontrak §5.13; model domain §3.1 hanya menyebut `email_message_id`/`email_error`, yang tidak bisa menjawab "kapan terkirim". Baris lama otomatis berarti "belum/gagal terkirim" |
+| `…_indeks_keyset_katalog_publik` | Indeks `product(publish_status, deleted_at, published_at DESC, id DESC)` untuk keyset katalog publik (§1.6/§5.1)                                                                                                                                  |
+| `…_indeks_keyset_artikel_publik` | Dua indeks **ekspresi parsial** pada `article` untuk keyset journal publik (§1.6/§5.3); lihat §Constraint SQL manual                                                                                                                              |
 
 Reset database lokal (dev saja — **menghapus semua data**):
 
@@ -216,21 +224,21 @@ Aturan itu ditambahkan sebagai SQL di blok terakhir
 drift karena tidak ada padanannya di `schema.prisma` — tapi **jangan hapus blok
 itu** saat membuat migrasi berikutnya.
 
-| Objek | Aturan | Sumber |
-| --- | --- | --- |
-| `invite_email_active_key` | Unik parsial: satu undangan aktif per email (`WHERE accepted_at IS NULL AND revoked_at IS NULL`) | §3.1 |
-| `product_material_primary_key` | Unik parsial: maksimal satu material primer per produk (`WHERE is_primary`) | §3.5 |
-| `product_low_stock_threshold_check` | `low_stock_threshold >= 0` bila diisi | §3.5 (Q13) |
-| `product_stock_quantity_check` | `stock_quantity >= 0` bila diisi | kontrak §5.6 `ProductInput` |
-| `comment_author_identity_check` | `author_user_id`, `author_email`, atau `anonymized_at` harus terisi | §3.6 |
-| `inquiry_email_present_check` | `email` wajib kecuali sudah dianonimkan | §3.7 |
-| `page_block_global_check` | `page_id IS NULL` ⇔ `visibility = 'GLOBAL'` (blok global) | D10, §3.8 |
-| `nav_item_target_check` | Target sesuai `type`: `PAGE`→`page_id`, `CATEGORY`→`category_id`, `CUSTOM_LINK`→`url`, `ARTICLE_ARCHIVE`→tanpa target | §3.8 |
-| `site_setting_singleton_check` | `id = 1` (singleton bertipe) | D11, §3.8 |
-| `site_setting_low_stock_threshold_check` | `low_stock_threshold >= 0` | §3.8 (Q13) |
-| `slug_redirect_target_check` | Tepat satu dari `product_id`/`article_id`, sesuai `type` | §3.8, §6.10 |
-| `product_sku_seq` | Sequence global untuk saran SKU `ORN-<kode>-<NNNN>`; nomor tidak pernah dipakai ulang | §6.2 |
-| `article_public_effective_at_idx`, `article_public_category_effective_at_idx` | Indeks ekspresi parsial `COALESCE(published_at, publish_at) DESC, id DESC` (opsional per `category_id`) `WHERE deleted_at IS NULL AND status <> 'DRAFT'`, untuk keyset journal publik. Ekspresi dan predikat parsial tidak bisa ditulis di `schema.prisma`; ada di migrasi `…_indeks_keyset_artikel_publik` | kontrak §1.6/§5.3, ADR K8 |
+| Objek                                                                         | Aturan                                                                                                                                                                                                                                                                                                      | Sumber                      |
+| ----------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------- |
+| `invite_email_active_key`                                                     | Unik parsial: satu undangan aktif per email (`WHERE accepted_at IS NULL AND revoked_at IS NULL`)                                                                                                                                                                                                            | §3.1                        |
+| `product_material_primary_key`                                                | Unik parsial: maksimal satu material primer per produk (`WHERE is_primary`)                                                                                                                                                                                                                                 | §3.5                        |
+| `product_low_stock_threshold_check`                                           | `low_stock_threshold >= 0` bila diisi                                                                                                                                                                                                                                                                       | §3.5 (Q13)                  |
+| `product_stock_quantity_check`                                                | `stock_quantity >= 0` bila diisi                                                                                                                                                                                                                                                                            | kontrak §5.6 `ProductInput` |
+| `comment_author_identity_check`                                               | `author_user_id`, `author_email`, atau `anonymized_at` harus terisi                                                                                                                                                                                                                                         | §3.6                        |
+| `inquiry_email_present_check`                                                 | `email` wajib kecuali sudah dianonimkan                                                                                                                                                                                                                                                                     | §3.7                        |
+| `page_block_global_check`                                                     | `page_id IS NULL` ⇔ `visibility = 'GLOBAL'` (blok global)                                                                                                                                                                                                                                                   | D10, §3.8                   |
+| `nav_item_target_check`                                                       | Target sesuai `type`: `PAGE`→`page_id`, `CATEGORY`→`category_id`, `CUSTOM_LINK`→`url`, `ARTICLE_ARCHIVE`→tanpa target                                                                                                                                                                                       | §3.8                        |
+| `site_setting_singleton_check`                                                | `id = 1` (singleton bertipe)                                                                                                                                                                                                                                                                                | D11, §3.8                   |
+| `site_setting_low_stock_threshold_check`                                      | `low_stock_threshold >= 0`                                                                                                                                                                                                                                                                                  | §3.8 (Q13)                  |
+| `slug_redirect_target_check`                                                  | Tepat satu dari `product_id`/`article_id`, sesuai `type`                                                                                                                                                                                                                                                    | §3.8, §6.10                 |
+| `product_sku_seq`                                                             | Sequence global untuk saran SKU `ORN-<kode>-<NNNN>`; nomor tidak pernah dipakai ulang                                                                                                                                                                                                                       | §6.2                        |
+| `article_public_effective_at_idx`, `article_public_category_effective_at_idx` | Indeks ekspresi parsial `COALESCE(published_at, publish_at) DESC, id DESC` (opsional per `category_id`) `WHERE deleted_at IS NULL AND status <> 'DRAFT'`, untuk keyset journal publik. Ekspresi dan predikat parsial tidak bisa ditulis di `schema.prisma`; ada di migrasi `…_indeks_keyset_artikel_publik` | kontrak §1.6/§5.3, ADR K8   |
 
 Aturan lain yang **sengaja tetap di lapisan API** (tidak bisa/tidak layak jadi
 constraint DB): syarat publish produk & artikel, "tepat satu material primer saat
@@ -248,19 +256,20 @@ berhenti dengan daftar **nama** variabel dan aturannya (nilai tidak pernah
 dicetak). `dev` dan `start` memuat `backend/.env` bila ada
 (`--env-file-if-exists`); di production set env lewat platform.
 
-| Variabel | Default | Keterangan |
-| --- | --- | --- |
-| `NODE_ENV` | `development` | `development` \| `test` \| `production` |
-| `HOST` | `0.0.0.0` | Alamat listen |
-| `PORT` | `4000` | Port listen |
-| `LOG_LEVEL` | `info` | Level log pino |
-| `DATABASE_URL` | — (**wajib**) | URL `postgresql://` |
-| `ADMIN_ORIGIN` | — | Opsional; wajib sejak auth admin (ADR K7) |
-| `INTERNAL_API_KEY` | — | Opsional; header `X-Internal-Key` (ADR K7). **Wajib** agar `POST /v1/public/*` bisa dipanggil sama sekali, dan dipakai sebagai kunci HMAC `ipHash` |
-| `INTERNAL_JOB_TOKEN` | — | Opsional; bearer `/v1/internal/*` (kontrak §5.17) |
-| `SITE_URL`, `REVALIDATE_SECRET` | — | Opsional; revalidasi Next (kontrak §6) |
-| `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_BUCKET`, `R2_PUBLIC_URL` | — | Opsional; media (ADR K3) |
-| `RESEND_API_KEY`, `RESEND_FROM` | — | Opsional; email (ADR K4). **Belum dibaca kode mana pun**: modul Resend ditunda ke Tahap 8 (lihat "Email" di bawah) |
+| Variabel                                                                                  | Default       | Keterangan                                                                                                                                         |
+| ----------------------------------------------------------------------------------------- | ------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `NODE_ENV`                                                                                | `development` | `development` \| `test` \| `production`                                                                                                            |
+| `HOST`                                                                                    | `0.0.0.0`     | Alamat listen                                                                                                                                      |
+| `PORT`                                                                                    | `4000`        | Port listen                                                                                                                                        |
+| `LOG_LEVEL`                                                                               | `info`        | Level log pino                                                                                                                                     |
+| `DATABASE_URL`                                                                            | — (**wajib**) | URL `postgresql://`                                                                                                                                |
+| `ADMIN_ORIGIN`                                                                            | —             | Opsional; wajib sejak auth admin (ADR K7)                                                                                                          |
+| `INTERNAL_API_KEY`                                                                        | —             | Opsional; header `X-Internal-Key` (ADR K7). **Wajib** agar `POST /v1/public/*` bisa dipanggil sama sekali, dan dipakai sebagai kunci HMAC `ipHash` |
+| `INTERNAL_JOB_TOKEN`                                                                      | —             | Opsional; bearer `/v1/internal/*` (kontrak §5.17)                                                                                                  |
+| `SITE_URL`, `REVALIDATE_SECRET`                                                           | —             | Opsional; revalidasi Next (kontrak §6)                                                                                                             |
+| `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_BUCKET`, `R2_PUBLIC_URL` | —             | Media (ADR K3); tanpa kelimanya unggah menjawab `503`                                                                                              |
+| `MEDIA_UPLOAD_SECRET`                                                                     | —             | Kunci HMAC `uploadId` (kontrak §5.12); min. 32 karakter di production                                                                              |
+| `RESEND_API_KEY`, `RESEND_FROM`                                                           | —             | Opsional; email (ADR K4). **Belum dibaca kode mana pun**: modul Resend ditunda ke Tahap 8 (lihat "Email" di bawah)                                 |
 
 Di `NODE_ENV=production`, `INTERNAL_API_KEY`, `INTERNAL_JOB_TOKEN`, dan
 `REVALIDATE_SECRET` (bila di-set) minimal 32 karakter.
@@ -291,11 +300,11 @@ semua waktu diturunkan relatif terhadap waktu seed.
 
 **Pengaman** (`prisma/seed/guard.ts`), dijalankan sebelum koneksi dibuka:
 
-| Kondisi | Hasil |
-| --- | --- |
-| `NODE_ENV=production` | Batal, exit code 1, tidak ada yang ditulis |
-| Nama database di `DATABASE_URL` tidak memuat `ornament` | Batal, exit code 1 |
-| `DATABASE_URL` kosong/tidak valid | Batal, exit code 1 |
+| Kondisi                                                 | Hasil                                      |
+| ------------------------------------------------------- | ------------------------------------------ |
+| `NODE_ENV=production`                                   | Batal, exit code 1, tidak ada yang ditulis |
+| Nama database di `DATABASE_URL` tidak memuat `ornament` | Batal, exit code 1                         |
+| `DATABASE_URL` kosong/tidak valid                       | Batal, exit code 1                         |
 
 Seed terdaftar di `prisma.config.ts` (`migrations.seed`), jadi ikut
 `prisma migrate reset` dan `prisma migrate dev` pada database yang baru dibuat —
@@ -304,17 +313,17 @@ menjalankan seed.
 
 ### Cara data mockup dipetakan
 
-| Mockup | Hasil di database |
-| --- | --- |
-| Tanggal relatif ("3 jam lalu", "Kemarin", "18 mnt") | `now - offset` saat seed dijalankan |
-| Tanggal absolut ("26 Agu 2026", "23 Agu 2026") | Digeser dengan selisih yang sama terhadap "sekarang"-nya mockup (24 Agu 2026), sehingga artikel `Scheduled` tetap terjadwal di masa depan |
-| Periode target kirim inquiry ("Nov 2026") | Tidak digeser; `targetShipDate` = tanggal 1 bulan itu (§6.5) |
-| `status` produk ("In Stock" … "Draft") | Dipecah `publishStatus` + `stockStatus` turunan (§6.3) |
-| `stock` ("84 unit siap kirim") | `stockQuantity`; teks tanpa angka ("Menunggu foto produk") → `stockNote` |
-| `PRODUCT_SPEC` (panel detail satu produk) | Dimensi/lead time/harga FOB hanya untuk produk pertama; dua baris sisanya jadi `ProductSpec` |
-| `QC_POINTS` (global) | Checklist 4 tahap untuk **setiap** produk (D6); `PASSED` untuk produk terbit |
-| `subject` inquiry (teks bebas) | Dihasilkan ulang sesuai §6.5; nomor `INQ-0001…` diurutkan dari yang terlama |
-| `BUILDER_BLOCKS` | Blok beranda; "Footer" jadi blok global (`pageId` null, D10); nama set gambar disimpan di `config.imageNote` |
+| Mockup                                              | Hasil di database                                                                                                                         |
+| --------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
+| Tanggal relatif ("3 jam lalu", "Kemarin", "18 mnt") | `now - offset` saat seed dijalankan                                                                                                       |
+| Tanggal absolut ("26 Agu 2026", "23 Agu 2026")      | Digeser dengan selisih yang sama terhadap "sekarang"-nya mockup (24 Agu 2026), sehingga artikel `Scheduled` tetap terjadwal di masa depan |
+| Periode target kirim inquiry ("Nov 2026")           | Tidak digeser; `targetShipDate` = tanggal 1 bulan itu (§6.5)                                                                              |
+| `status` produk ("In Stock" … "Draft")              | Dipecah `publishStatus` + `stockStatus` turunan (§6.3)                                                                                    |
+| `stock` ("84 unit siap kirim")                      | `stockQuantity`; teks tanpa angka ("Menunggu foto produk") → `stockNote`                                                                  |
+| `PRODUCT_SPEC` (panel detail satu produk)           | Dimensi/lead time/harga FOB hanya untuk produk pertama; dua baris sisanya jadi `ProductSpec`                                              |
+| `QC_POINTS` (global)                                | Checklist 4 tahap untuk **setiap** produk (D6); `PASSED` untuk produk terbit                                                              |
+| `subject` inquiry (teks bebas)                      | Dihasilkan ulang sesuai §6.5; nomor `INQ-0001…` diurutkan dari yang terlama                                                               |
+| `BUILDER_BLOCKS`                                    | Blok beranda; "Footer" jadi blok global (`pageId` null, D10); nama set gambar disimpan di `config.imageNote`                              |
 
 Yang **tidak** ada sumbernya di mockup, dan karena itu tidak diisi: berkas media
 (tabel `media` kosong, semua `*ImageId` null — produk terbit karenanya belum
@@ -327,10 +336,10 @@ Email komentar (wajib per §3.6) dibuat sintetis `@example.com`.
 Mockup tidak memuat kata sandi, jadi **semua** akun seed memakai satu kata sandi
 dev yang sama, di-hash argon2id seperti kata sandi sungguhan (ADR K7):
 
-| Sumber | Nilai |
-| --- | --- |
+| Sumber                       | Nilai                                   |
+| ---------------------------- | --------------------------------------- |
 | `SEED_ADMIN_PASSWORD` di env | dipakai apa adanya (minimal 8 karakter) |
-| tidak di-set | `DEV_ONLY_PASSWORD` |
+| tidak di-set                 | `DEV_ONLY_PASSWORD`                     |
 
 Nilai yang dipakai **dicetak** di akhir `npm run db:seed` bersama satu email
 contoh, supaya tidak perlu ditebak:
@@ -350,10 +359,10 @@ dan `dwi@ornament.id` (Editor), `bagus@ornament.id` (Contributor).
 
 [Vitest](https://vitest.dev) dengan dua project:
 
-| Project | Lokasi | Butuh DB |
-| --- | --- | --- |
-| `unit` | `test/unit/**/*.test.ts` | Tidak — app dibangun tanpa DB, diuji lewat `app.inject` |
-| `integration` | `test/integration/**/*.test.ts` | Ya — database tes (`ornament_test`) |
+| Project       | Lokasi                          | Butuh DB                                                |
+| ------------- | ------------------------------- | ------------------------------------------------------- |
+| `unit`        | `test/unit/**/*.test.ts`        | Tidak — app dibangun tanpa DB, diuji lewat `app.inject` |
+| `integration` | `test/integration/**/*.test.ts` | Ya — database tes (`ornament_test`)                     |
 
 ```bash
 npm run db:up                                   # di root; integration butuh PostgreSQL
@@ -445,10 +454,10 @@ satu. Browser memperlakukan `http://localhost` sebagai origin aman, jadi
 
 ### Masa berlaku & sliding refresh
 
-| | Tanpa "Ingat saya" | "Ingat saya" |
-| --- | --- | --- |
-| Jendela idle (`expiresAt`, `Max-Age`) | 12 jam | 30 hari |
-| Batas mutlak (`absoluteExpiresAt`) | 7 hari | 90 hari |
+|                                       | Tanpa "Ingat saya" | "Ingat saya" |
+| ------------------------------------- | ------------------ | ------------ |
+| Jendela idle (`expiresAt`, `Max-Age`) | 12 jam             | 30 hari      |
+| Batas mutlak (`absoluteExpiresAt`)    | 7 hari             | 90 hari      |
 
 Setiap request admin yang sah memperpanjang `expiresAt` (dibatasi
 `absoluteExpiresAt`) dan menyegarkan `lastSeenAt` + `User.lastActiveAt`
@@ -465,13 +474,13 @@ sekaligus). `deleteExpiredSessions()` tersedia untuk job pembersih nanti.
 `src/lib/password.ts`, lewat `@node-rs/argon2` (binary prebuilt per platform —
 tidak ada kompilasi native saat install).
 
-| Parameter | Nilai | Catatan |
-| --- | --- | --- |
-| Algoritma | argon2id v19 | Hibrida: tahan GPU **dan** side-channel |
-| `m` (memori) | 65536 KiB (64 MiB) | ~3× batas bawah OWASP (19456) |
-| `t` (iterasi) | 3 | |
-| `p` (lane) | 1 | Node single-threaded; `p > 1` tidak sepadan |
-| Keluaran / salt | 32 byte / 16 byte acak | Salt dibuat pustaka per hash |
+| Parameter       | Nilai                  | Catatan                                     |
+| --------------- | ---------------------- | ------------------------------------------- |
+| Algoritma       | argon2id v19           | Hibrida: tahan GPU **dan** side-channel     |
+| `m` (memori)    | 65536 KiB (64 MiB)     | ~3× batas bawah OWASP (19456)               |
+| `t` (iterasi)   | 3                      |                                             |
+| `p` (lane)      | 1                      | Node single-threaded; `p > 1` tidak sepadan |
+| Keluaran / salt | 32 byte / 16 byte acak | Salt dibuat pustaka per hash                |
 
 Sekitar 85 ms per hash pada laptop. `needsRehash()` menandai hash berparameter
 lebih lemah (atau bukan argon2id v19); login menulis ulang hash seperti itu
@@ -514,23 +523,23 @@ kontrak §1.10: `Origin` → `401` sesi → `403` izin → `400` validasi. Peman
 tanpa hak karena itu tidak pernah menerima detail validasi maupun `404`
 keberadaan resource.
 
-| Situasi | Respons |
-| --- | --- |
-| Tanpa cookie / token tak dikenal / kedaluwarsa / user `REVOKED` | `401 UNAUTHENTICATED` + cookie penghapus |
-| Sesi sah, izin kurang | `403 FORBIDDEN`, `details: { requiredPermission, requiredRoles }` |
-| Login gagal (sebab apa pun) | `401 INVALID_CREDENTIALS` — pesan **selalu** sama |
+| Situasi                                                         | Respons                                                           |
+| --------------------------------------------------------------- | ----------------------------------------------------------------- |
+| Tanpa cookie / token tak dikenal / kedaluwarsa / user `REVOKED` | `401 UNAUTHENTICATED` + cookie penghapus                          |
+| Sesi sah, izin kurang                                           | `403 FORBIDDEN`, `details: { requiredPermission, requiredRoles }` |
+| Login gagal (sebab apa pun)                                     | `401 INVALID_CREDENTIALS` — pesan **selalu** sama                 |
 
 Sumber matriksnya satu: `ROLE_PERMISSIONS` di `@ornament/shared` (kontrak §3.3).
 `Me.permissions` (untuk menyembunyikan tombol) dan guard API membaca tabel yang
 sama, jadi UI dan server tidak bisa berbeda pendapat.
 
-| Kemampuan | ADM | EDT | CTR | Izin |
-| --- | --- | --- | --- | --- |
-| Mengelola pengguna & undangan | ✓ | — | — | `user.manage` |
-| Menerbitkan produk & artikel | ✓ | ✓ | — | `product.publish`, `article.publish` |
-| Mengelola pengrajin | ✓ | ✓ | — | `artisan.write` |
-| Membalas inquiry | ✓ | ✓ | — | `inquiry.manage` |
-| Settings & tema | ✓ | — | — | `settings.manage` |
+| Kemampuan                     | ADM | EDT | CTR | Izin                                 |
+| ----------------------------- | --- | --- | --- | ------------------------------------ |
+| Mengelola pengguna & undangan | ✓   | —   | —   | `user.manage`                        |
+| Menerbitkan produk & artikel  | ✓   | ✓   | —   | `product.publish`, `article.publish` |
+| Mengelola pengrajin           | ✓   | ✓   | —   | `artisan.write`                      |
+| Membalas inquiry              | ✓   | ✓   | —   | `inquiry.manage`                     |
+| Settings & tema               | ✓   | —   | —   | `settings.manage`                    |
 
 Contoh: pengguna `REVOKED` menjawab `401 UNAUTHENTICATED` (bukan `403`) persis
 seperti kontrak §2.4, agar admin melakukan redirect ke `/admin/login`.
@@ -565,14 +574,14 @@ diturunkan saat query — tidak ada kolomnya di database.
 **Aturan anti-lockout** (`src/modules/users/service.ts`), semuanya
 `422 BUSINESS_RULE_VIOLATION` dengan `details.rule`:
 
-| `rule` | Kapan |
-| --- | --- |
+| `rule`                   | Kapan                                                                              |
+| ------------------------ | ---------------------------------------------------------------------------------- |
 | `CANNOT_CHANGE_OWN_ROLE` | Administrator mengubah **perannya sendiri** (mengubah namanya sendiri tetap boleh) |
-| `CANNOT_REVOKE_SELF` | Administrator mencabut **aksesnya sendiri** |
-| `LAST_ADMINISTRATOR` | Menurunkan peran / mencabut Administrator **aktif terakhir** |
+| `CANNOT_REVOKE_SELF`     | Administrator mencabut **aksesnya sendiri**                                        |
+| `LAST_ADMINISTRATOR`     | Menurunkan peran / mencabut Administrator **aktif terakhir**                       |
 
 Dua aturan pertama bukan sekadar kenyamanan: karena pemanggil selalu
-Administrator aktif, melarang keduanya membuat sistem *secara struktural* selalu
+Administrator aktif, melarang keduanya membuat sistem _secara struktural_ selalu
 menyisakan minimal satu Administrator aktif, tanpa bergantung pada hasil `COUNT`
 yang bisa basi karena request lain berjalan bersamaan. `LAST_ADMINISTRATOR`
 tetap diperiksa sebagai jaring pengaman untuk data yang diubah di luar API.
@@ -590,7 +599,7 @@ Konsekuensinya: menghapus Administrator terakhir hanya mungkin lewat database.
 3. `POST /v1/admin/auth/invites/accept` (`{ token, name, password }`) membuat
    `User` dan menandai undangan diterima **dalam satu transaksi**, lalu langsung
    membuat sesi 12 jam. Token sekali pakai: klaim memakai `UPDATE … WHERE
-   accepted_at IS NULL`, jadi dua request bersamaan hanya menghasilkan satu akun.
+accepted_at IS NULL`, jadi dua request bersamaan hanya menghasilkan satu akun.
 4. Token salah, kedaluwarsa, dicabut, atau sudah dipakai → **satu** respons
    `404 NOT_FOUND` dengan pesan yang sama (anti enumerasi), dan kedua endpoint
    tanpa sesi ini dibatasi 10 permintaan / 15 menit per IP.
@@ -611,7 +620,7 @@ Konsekuensinya: menghapus Administrator terakhir hanya mungkin lewat database.
 
 - **CORS**: allowlist **satu** origin dari `ADMIN_ORIGIN`, `credentials: true`,
   tanpa wildcard; metode `GET,POST,PATCH,PUT,DELETE`, header `Content-Type,
-  Idempotency-Key, X-Request-Id` (kontrak §2.1). Situs publik tidak masuk
+Idempotency-Key, X-Request-Id` (kontrak §2.1). Situs publik tidak masuk
   allowlist — ia memanggil `/v1/public/*` server-to-server.
 - **Cek Origin**: setiap non-GET wajib membawa `Origin` yang sama dengan
   `ADMIN_ORIGIN`, jika tidak → `403 ORIGIN_NOT_ALLOWED`, **sebelum** cek sesi
@@ -625,13 +634,13 @@ server mencatat peringatan saat start.
 
 ### Rate limit & lockout login
 
-| Kunci | Batas | Mekanisme |
-| --- | --- | --- |
-| IP, `POST /admin/auth/login` | 20 / 15 menit | `@fastify/rate-limit` (store in-memory) |
-| Email, `POST /admin/auth/login` | 5 **gagal** / 15 menit | `LoginThrottle` (in-memory) |
-| IP, `logout`, `me`, dan seluruh `/v1/admin/*` lain | 600 / menit | `@fastify/rate-limit`, jaring pengaman |
-| User, `POST /admin/auth/password` | 5 / 15 menit | `PasswordChangeThrottle` (in-memory) |
-| IP, `GET /admin/auth/invites/:token` & `POST .../accept` | 10 / 15 menit | `@fastify/rate-limit`, anti enumerasi token |
+| Kunci                                                    | Batas                  | Mekanisme                                   |
+| -------------------------------------------------------- | ---------------------- | ------------------------------------------- |
+| IP, `POST /admin/auth/login`                             | 20 / 15 menit          | `@fastify/rate-limit` (store in-memory)     |
+| Email, `POST /admin/auth/login`                          | 5 **gagal** / 15 menit | `LoginThrottle` (in-memory)                 |
+| IP, `logout`, `me`, dan seluruh `/v1/admin/*` lain       | 600 / menit            | `@fastify/rate-limit`, jaring pengaman      |
+| User, `POST /admin/auth/password`                        | 5 / 15 menit           | `PasswordChangeThrottle` (in-memory)        |
+| IP, `GET /admin/auth/invites/:token` & `POST .../accept` | 10 / 15 menit          | `@fastify/rate-limit`, anti enumerasi token |
 
 Keduanya menjawab `429 RATE_LIMITED` lewat helper `rateLimited()`, jadi
 respons tetap envelope kontrak §1.5 dengan `details.retryAfterSeconds` **dan**
@@ -648,7 +657,7 @@ ditemukan, dan tetap memverifikasi hash pengguna `REVOKED`.
 
 > **Batasan yang disengaja:** kedua state ada di memori proses. Begitu API
 > berjalan lebih dari satu instance, batas efektif menjadi `batas × jumlah
-> instance` dan hilang setiap restart/deploy. ADR K8 mengasumsikan satu proses
+instance` dan hilang setiap restart/deploy. ADR K8 mengasumsikan satu proses
 > hidup lama, jadi hari ini cukup; saat scale-out, pindahkan ke store bersama
 > (opsi `redis` pada plugin, dan tabel PostgreSQL untuk lockout lewat migrasi
 > baru).
@@ -692,9 +701,9 @@ Spesifikasi lengkap di [`docs/api-contract.md`](docs/api-contract.md) §1.
 
 ### Health check
 
-| Endpoint | Arti | Respons |
-| --- | --- | --- |
-| `GET /v1/health` | Liveness — proses hidup; tidak menyentuh DB | `200 {"data":{"status":"ok"}}` |
+| Endpoint               | Arti                                         | Respons                                                                                                       |
+| ---------------------- | -------------------------------------------- | ------------------------------------------------------------------------------------------------------------- |
+| `GET /v1/health`       | Liveness — proses hidup; tidak menyentuh DB  | `200 {"data":{"status":"ok"}}`                                                                                |
 | `GET /v1/health/ready` | Readiness — `SELECT 1` ke DB (timeout 2 dtk) | `200 {"data":{"status":"ok"}}`, atau `503 SERVICE_UNAVAILABLE` bila DB tak terjangkau / app dibangun tanpa DB |
 
 Log request liveness hanya muncul di level `warn` ke atas agar probe tidak
@@ -710,7 +719,9 @@ selain `application/json`, gagal validasi, dan error tak terduga — dikirim seb
   "error": {
     "code": "VALIDATION_FAILED",
     "message": "Beberapa field tidak valid.",
-    "details": [{ "path": "materials[0].materialId", "code": "invalid_format", "message": "UUID tidak valid" }],
+    "details": [
+      { "path": "materials[0].materialId", "code": "invalid_format", "message": "UUID tidak valid" }
+    ],
     "requestId": "3f0b8a0e-3a55-4b52-9b1a-2c4f7c1a0d11"
   }
 }
@@ -794,24 +805,24 @@ di-cache di edge.
 
 ### Endpoint
 
-| Endpoint | Query | Respons |
-| --- | --- | --- |
-| `GET /v1/public/products` | `category` (slug, termasuk turunan), `material` (slug dipisah koma, **AND**), `tag`, `artisan`, `sort=-publishedAt` (default) \| `name`, `limit` (≤48, default 12), `cursor` | `{ data: PublicProductCard[], meta: { limit, nextCursor, total } }` |
-| `GET /v1/public/products/:slug` | — | `{ data: PublicProductDetail }` — spesifikasi, checklist QC 4 tahap, pengrajin ringkas, dan maks 4 produk terkait |
-| `GET /v1/public/categories` | `withEmpty` (default `false`) | Daftar datar urut pohon + `depth` dan `productCount` (kategori + turunannya) |
-| `GET /v1/public/materials` | `withEmpty` | Urut `name`, dengan `productCount` |
-| `GET /v1/public/artisans` | `regency` (tanpa memandang besar-kecil huruf), `limit`, `cursor` | `{ data: PublicArtisanCard[], meta }` — hanya `ACTIVE`/`FULL_CAPACITY` yang tidak diarsipkan |
-| `GET /v1/public/artisans/:slug` | — | `{ data: PublicArtisanDetail }` — profil + maks 12 produk terbaru miliknya |
-| `GET /v1/public/article-categories` | `withEmpty` | Urut `position`, dengan `articleCount` (artikel terbit) |
-| `GET /v1/public/articles` | `category` (slug `ArticleCategory`), `tag`, `limit`, `cursor` | `{ data: PublicArticleCard[], meta }` — urut `-publishedAt` (terjadwal: `publishAt`) |
-| `GET /v1/public/articles/:slug` | — | `{ data: PublicArticleDetail }` — blok isi, tag, gambar unggulan, penulis hanya `name` |
-| `GET /v1/public/articles/:slug/comments` | `limit` (default 20), `cursor` | `{ data: PublicComment[], meta }` — komentar akar `APPROVED` urut `createdAt` naik, balasan bersarang 1 tingkat |
-| `GET /v1/public/settings` | — | `{ data: PublicSiteSetting }` — nama, tagline, kontak, alamat, sosial, SEO, `sitemapEnabled`, `allowIndexing` |
-| `GET /v1/public/nav-items` | — | Menu satu tingkat urut `position`, dengan `href` turunan |
-| `GET /v1/public/pages` | `path` (wajib, diawali `/`) | `{ data: PublicPage }` — blok `ACTIVE` halaman, lalu blok `GLOBAL` |
-| `GET /v1/public/blocks/global` | — | Blok global saja, untuk layout tanpa `Page` (mis. `/produk/[slug]`) |
-| `GET /v1/public/sitemap` | — | `{ enabled, entries: [{ path, updatedAt }] }` — halaman, produk, artikel, pengrajin yang tayang |
-| `GET /v1/public/redirects` | `type` (`PRODUCT`\|`ARTICLE`), `slug` (slug lama) | `{ data: PublicRedirect }` — `301` ke slug terkini (§6.10) |
+| Endpoint                                 | Query                                                                                                                                                                        | Respons                                                                                                           |
+| ---------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------- |
+| `GET /v1/public/products`                | `category` (slug, termasuk turunan), `material` (slug dipisah koma, **AND**), `tag`, `artisan`, `sort=-publishedAt` (default) \| `name`, `limit` (≤48, default 12), `cursor` | `{ data: PublicProductCard[], meta: { limit, nextCursor, total } }`                                               |
+| `GET /v1/public/products/:slug`          | —                                                                                                                                                                            | `{ data: PublicProductDetail }` — spesifikasi, checklist QC 4 tahap, pengrajin ringkas, dan maks 4 produk terkait |
+| `GET /v1/public/categories`              | `withEmpty` (default `false`)                                                                                                                                                | Daftar datar urut pohon + `depth` dan `productCount` (kategori + turunannya)                                      |
+| `GET /v1/public/materials`               | `withEmpty`                                                                                                                                                                  | Urut `name`, dengan `productCount`                                                                                |
+| `GET /v1/public/artisans`                | `regency` (tanpa memandang besar-kecil huruf), `limit`, `cursor`                                                                                                             | `{ data: PublicArtisanCard[], meta }` — hanya `ACTIVE`/`FULL_CAPACITY` yang tidak diarsipkan                      |
+| `GET /v1/public/artisans/:slug`          | —                                                                                                                                                                            | `{ data: PublicArtisanDetail }` — profil + maks 12 produk terbaru miliknya                                        |
+| `GET /v1/public/article-categories`      | `withEmpty`                                                                                                                                                                  | Urut `position`, dengan `articleCount` (artikel terbit)                                                           |
+| `GET /v1/public/articles`                | `category` (slug `ArticleCategory`), `tag`, `limit`, `cursor`                                                                                                                | `{ data: PublicArticleCard[], meta }` — urut `-publishedAt` (terjadwal: `publishAt`)                              |
+| `GET /v1/public/articles/:slug`          | —                                                                                                                                                                            | `{ data: PublicArticleDetail }` — blok isi, tag, gambar unggulan, penulis hanya `name`                            |
+| `GET /v1/public/articles/:slug/comments` | `limit` (default 20), `cursor`                                                                                                                                               | `{ data: PublicComment[], meta }` — komentar akar `APPROVED` urut `createdAt` naik, balasan bersarang 1 tingkat   |
+| `GET /v1/public/settings`                | —                                                                                                                                                                            | `{ data: PublicSiteSetting }` — nama, tagline, kontak, alamat, sosial, SEO, `sitemapEnabled`, `allowIndexing`     |
+| `GET /v1/public/nav-items`               | —                                                                                                                                                                            | Menu satu tingkat urut `position`, dengan `href` turunan                                                          |
+| `GET /v1/public/pages`                   | `path` (wajib, diawali `/`)                                                                                                                                                  | `{ data: PublicPage }` — blok `ACTIVE` halaman, lalu blok `GLOBAL`                                                |
+| `GET /v1/public/blocks/global`           | —                                                                                                                                                                            | Blok global saja, untuk layout tanpa `Page` (mis. `/produk/[slug]`)                                               |
+| `GET /v1/public/sitemap`                 | —                                                                                                                                                                            | `{ enabled, entries: [{ path, updatedAt }] }` — halaman, produk, artikel, pengrajin yang tayang                   |
+| `GET /v1/public/redirects`               | `type` (`PRODUCT`\|`ARTICLE`), `slug` (slug lama)                                                                                                                            | `{ data: PublicRedirect }` — `301` ke slug terkini (§6.10)                                                        |
 
 Slug filter yang tidak dikenal menjawab `200` dengan `data: []` (bukan `404`),
 supaya URL filter lama tidak error. Produk draf/di Trash dan pengrajin
@@ -884,12 +895,12 @@ tayang tanpa batas. Lihat `src/modules/public/guard.ts` dan
 app.get('/public/products', { config: publicReadAccess(), schema: { … } }, handler);
 ```
 
-| Aspek | Nilai |
-| --- | --- |
-| `Cache-Control` GET | `public, max-age=0, s-maxage=60, stale-while-revalidate=300` (§1.2) |
-| `Cache-Control` POST | `no-store` |
-| Rate limit dengan `X-Internal-Key` valid | 1200 / menit per IP |
-| Rate limit tanpa key (atau key salah) | 120 / menit per IP |
+| Aspek                                    | Nilai                                                               |
+| ---------------------------------------- | ------------------------------------------------------------------- |
+| `Cache-Control` GET                      | `public, max-age=0, s-maxage=60, stale-while-revalidate=300` (§1.2) |
+| `Cache-Control` POST                     | `no-store`                                                          |
+| Rate limit dengan `X-Internal-Key` valid | 1200 / menit per IP                                                 |
+| Rate limit tanpa key (atau key salah)    | 120 / menit per IP                                                  |
 
 `X-Internal-Key` **tidak wajib** pada GET; key yang salah diperlakukan sama
 dengan tanpa key (bukan `401`), hanya kuotanya yang lebih ketat. Kuota tepercaya
@@ -926,14 +937,14 @@ publik yang boleh dipanggil siapa saja (A9), setiap POST publik melewati empat
 lapis yang urutannya mengikat — `modules/public/submit.ts` menjalankannya di
 satu tempat supaya tidak ada rute tulis yang melewatkan salah satunya:
 
-| # | Lapis | Di mana | Gagal → |
-| --- | --- | --- | --- |
-| 0 | `X-Internal-Key` wajib (A9) | `modules/public/guard.ts` (`onRequest`) | `401 INVALID_INTERNAL_KEY` |
-| 0 | Skema Zod `strictObject` | `schema.body` rute + `@ornament/shared` | `400 VALIDATION_FAILED` |
-| 1 | `ipHash` pengunjung | `client-identity.ts` | — |
-| 2 | Rate limit per `ipHash` (§2.3) | `submit-throttle.ts` | `429 RATE_LIMITED` + `Retry-After` |
-| 3 | Honeypot (A6) | `submit.ts` | **sukses palsu** |
-| 4 | `Idempotency-Key` (§1.8) | `lib/idempotency.ts` | `409`/`422` |
+| #   | Lapis                          | Di mana                                 | Gagal →                            |
+| --- | ------------------------------ | --------------------------------------- | ---------------------------------- |
+| 0   | `X-Internal-Key` wajib (A9)    | `modules/public/guard.ts` (`onRequest`) | `401 INVALID_INTERNAL_KEY`         |
+| 0   | Skema Zod `strictObject`       | `schema.body` rute + `@ornament/shared` | `400 VALIDATION_FAILED`            |
+| 1   | `ipHash` pengunjung            | `client-identity.ts`                    | —                                  |
+| 2   | Rate limit per `ipHash` (§2.3) | `submit-throttle.ts`                    | `429 RATE_LIMITED` + `Retry-After` |
+| 3   | Honeypot (A6)                  | `submit.ts`                             | **sukses palsu**                   |
+| 4   | `Idempotency-Key` (§1.8)       | `lib/idempotency.ts`                    | `409`/`422`                        |
 
 Rute tulis wajib memakai `config: publicWriteAccess("alasan")`; yang lupa gagal
 saat registrasi, dan `test/unit/public-access.test.ts` menuliskan daftar rute
@@ -941,11 +952,11 @@ tulis yang diizinkan secara eksplisit supaya penambahannya terlihat saat review.
 
 ### Endpoint
 
-| Method & path | Respons sukses | Catatan |
-| --- | --- | --- |
-| `POST /v1/public/inquiries` | `201 { data: { reference } }` | Hanya `reference` — seluruh isi `Inquiry` 🔒 (§4) |
-| `POST /v1/public/articles/:slug/comments` | `202 { data: { status: "PENDING" } }` | Artikel harus tayang; selain itu `404` |
-| `POST /v1/public/inquiry-uploads` | — | Presign ditunda; lihat "Lampiran" di bawah |
+| Method & path                             | Respons sukses                        | Catatan                                           |
+| ----------------------------------------- | ------------------------------------- | ------------------------------------------------- |
+| `POST /v1/public/inquiries`               | `201 { data: { reference } }`         | Hanya `reference` — seluruh isi `Inquiry` 🔒 (§4) |
+| `POST /v1/public/articles/:slug/comments` | `202 { data: { status: "PENDING" } }` | Artikel harus tayang; selain itu `404`            |
+| `POST /v1/public/inquiry-uploads`         | —                                     | Presign ditunda; lihat "Lampiran" di bawah        |
 
 ### Nilai yang diisi server (inquiry)
 
@@ -984,10 +995,10 @@ berjalan ikut ter-reset. Itu diterima karena `ipHash` memang berumur pendek
 
 ### Rate limit per `ipHash` (§2.3)
 
-| Rute | Batas |
-| --- | --- |
-| `POST /public/inquiries` | 5 / jam **dan** 20 / hari |
-| `POST /public/inquiry-uploads` | 15 / jam |
+| Rute                                   | Batas                          |
+| -------------------------------------- | ------------------------------ |
+| `POST /public/inquiries`               | 5 / jam **dan** 20 / hari      |
+| `POST /public/inquiry-uploads`         | 15 / jam                       |
 | `POST /public/articles/:slug/comments` | 5 / 10 menit **dan** 30 / hari |
 
 Dua jendela sekaligus tidak bisa dinyatakan dengan satu `max` + satu
@@ -1019,18 +1030,18 @@ endpoint ini untuk menebak artikel mana yang sedang draf.
 `idempotency_record` (migrasi `…_idempotensi_submit_publik`).
 
 Tabel sendiri, bukan kolom di `inquiry`/`comment`, karena penguncinya harus ada
-*sebelum* baris domain dibuat — indeks unik `(scope, actor, key)`-lah yang
+_sebelum_ baris domain dibuat — indeks unik `(scope, actor, key)`-lah yang
 memutuskan siapa yang menang saat dua request tiba bersamaan. Dan bukan peta di
 memori seperti `AttemptThrottle`, karena yang hilang saat restart di sini bukan
 sekadar hitungan percobaan melainkan jaminan "tidak ada baris ganda".
 
-| Situasi | Respons |
-| --- | --- |
-| Kunci baru | Handler dijalankan, hasilnya disimpan |
-| Kunci sama + body sama, sudah selesai | Respons tersimpan + `Idempotent-Replayed: true` |
-| Kunci sama + body sama, masih berjalan | `409 IDEMPOTENCY_IN_PROGRESS` |
-| Kunci sama + body berbeda | `422 IDEMPOTENCY_KEY_REUSED` |
-| Kunci sama, `ipHash` berbeda | Dianggap kunci lain (tidak pernah membaca respons orang lain) |
+| Situasi                                | Respons                                                       |
+| -------------------------------------- | ------------------------------------------------------------- |
+| Kunci baru                             | Handler dijalankan, hasilnya disimpan                         |
+| Kunci sama + body sama, sudah selesai  | Respons tersimpan + `Idempotent-Replayed: true`               |
+| Kunci sama + body sama, masih berjalan | `409 IDEMPOTENCY_IN_PROGRESS`                                 |
+| Kunci sama + body berbeda              | `422 IDEMPOTENCY_KEY_REUSED`                                  |
+| Kunci sama, `ipHash` berbeda           | Dianggap kunci lain (tidak pernah membaca respons orang lain) |
 
 Handler yang **gagal** menghapus barisnya lagi, sehingga kegagalan sementara
 tidak mengunci kunci itu selama 24 jam. Baris kedaluwarsa dibuang saat kunci itu
@@ -1105,21 +1116,21 @@ Kontrak §5.6. Dua lapis izin dipakai bersama dan sengaja dipisah:
    penolakannya `403` dengan `details.reason` `NOT_OWNER`/`NOT_DRAFT` (§2.4),
    **bukan** `404`, karena membaca produk orang lain memang boleh (§3.2).
 
-| Method & path | Penanda izin | Catatan |
-| --- | --- | --- |
-| `GET /admin/products` | `adminSession()` | Paginasi nomor halaman + `meta.counts` (`all`, `PUBLISHED`, `DRAFT`, `trash`) |
-| `POST /admin/products` | `product.write_draft` | Selalu `DRAFT`, `revision = 1`, 4 baris QC `PENDING` |
-| `POST /admin/products/sku-suggestions` | `product.write_draft` | Tidak menyimpan apa pun; `POST` karena mengambil nomor sequence |
-| `POST /admin/products/bulk` | `product.write_draft` | Izin dicek **per item**; `BulkResult`, sukses parsial |
-| `GET /admin/products/:id` | `adminSession()` | Termasuk yang di Trash |
-| `PATCH /admin/products/:id` | `product.write_draft` | `expectedRevision` wajib (§1.9) |
-| `POST /admin/products/:id/publish` \| `/unpublish` | `product.publish` | Editor+ |
-| `POST /admin/products/:id/duplicate` | `product.write_draft` | `Idempotency-Key` opsional (§1.8) |
-| `DELETE /admin/products/:id` | `product.trash` | Trash (`deletedAt`), bukan hapus |
-| `POST /admin/products/:id/restore` | `product.restore` | **Selalu** kembali `DRAFT` (Q3) |
-| `DELETE /admin/products/:id/permanent` | `product.purge` | Administrator saja (A3) |
-| `PATCH /admin/products/:id/qc/:stage` | `product.qc` | Tidak menaikkan `revision` |
-| `GET /admin/products/:id/revisions[/:number]` | `adminSession()` | Snapshot 🔒: Contributor hanya miliknya |
+| Method & path                                      | Penanda izin          | Catatan                                                                       |
+| -------------------------------------------------- | --------------------- | ----------------------------------------------------------------------------- |
+| `GET /admin/products`                              | `adminSession()`      | Paginasi nomor halaman + `meta.counts` (`all`, `PUBLISHED`, `DRAFT`, `trash`) |
+| `POST /admin/products`                             | `product.write_draft` | Selalu `DRAFT`, `revision = 1`, 4 baris QC `PENDING`                          |
+| `POST /admin/products/sku-suggestions`             | `product.write_draft` | Tidak menyimpan apa pun; `POST` karena mengambil nomor sequence               |
+| `POST /admin/products/bulk`                        | `product.write_draft` | Izin dicek **per item**; `BulkResult`, sukses parsial                         |
+| `GET /admin/products/:id`                          | `adminSession()`      | Termasuk yang di Trash                                                        |
+| `PATCH /admin/products/:id`                        | `product.write_draft` | `expectedRevision` wajib (§1.9)                                               |
+| `POST /admin/products/:id/publish` \| `/unpublish` | `product.publish`     | Editor+                                                                       |
+| `POST /admin/products/:id/duplicate`               | `product.write_draft` | `Idempotency-Key` opsional (§1.8)                                             |
+| `DELETE /admin/products/:id`                       | `product.trash`       | Trash (`deletedAt`), bukan hapus                                              |
+| `POST /admin/products/:id/restore`                 | `product.restore`     | **Selalu** kembali `DRAFT` (Q3)                                               |
+| `DELETE /admin/products/:id/permanent`             | `product.purge`       | Administrator saja (A3)                                                       |
+| `PATCH /admin/products/:id/qc/:stage`              | `product.qc`          | Tidak menaikkan `revision`                                                    |
+| `GET /admin/products/:id/revisions[/:number]`      | `adminSession()`      | Snapshot 🔒: Contributor hanya miliknya                                       |
 
 Rute **baca** memakai `adminSession()`, bukan izin tulis yang kebetulan dimiliki
 ketiga peran: kontrak §3.2 memang memberi baca ke semua peran, dan menulis
@@ -1228,16 +1239,16 @@ Kontrak §5.8, model §3.4 & §6.7. Berbeda dengan produk dan artikel, pengrajin
 Editor+, Contributor hanya lihat". Yang bercabang per peran adalah **bentuk
 DTO-nya**.
 
-| Method & path | Penanda izin | Catatan |
-| --- | --- | --- |
-| `GET /admin/artisans` | `adminSession()` | Nomor halaman + `meta.counts` per `ArtisanStatus` + `archived` |
-| `POST /admin/artisans` | `artisan.write` | `status` **selalu** `VERIFICATION` |
-| `GET /admin/artisans/:id` | `adminSession()` | Editor+: `AdminArtisan`; Contributor: `ArtisanRedacted` |
-| `PATCH /admin/artisans/:id` | `artisan.write` | `expectedUpdatedAt` wajib (§1.9) |
-| `POST /admin/artisans/:id/archive` \| `/unarchive` | `artisan.write` | Arsip memberi `warnings`, bukan menolak (A10) |
-| `GET /admin/artisans/:id/documents` | `artisan.read_private` | Editor+ saja |
-| `POST \| PATCH \| DELETE .../documents[/:documentId]` | `artisan.write` | Berkas wajib Media `PRIVATE` |
-| `GET .../documents/:documentId/url` | `artisan.read_private` | Presigned GET; lihat catatan R2 di bawah |
+| Method & path                                         | Penanda izin           | Catatan                                                        |
+| ----------------------------------------------------- | ---------------------- | -------------------------------------------------------------- |
+| `GET /admin/artisans`                                 | `adminSession()`       | Nomor halaman + `meta.counts` per `ArtisanStatus` + `archived` |
+| `POST /admin/artisans`                                | `artisan.write`        | `status` **selalu** `VERIFICATION`                             |
+| `GET /admin/artisans/:id`                             | `adminSession()`       | Editor+: `AdminArtisan`; Contributor: `ArtisanRedacted`        |
+| `PATCH /admin/artisans/:id`                           | `artisan.write`        | `expectedUpdatedAt` wajib (§1.9)                               |
+| `POST /admin/artisans/:id/archive` \| `/unarchive`    | `artisan.write`        | Arsip memberi `warnings`, bukan menolak (A10)                  |
+| `GET /admin/artisans/:id/documents`                   | `artisan.read_private` | Editor+ saja                                                   |
+| `POST \| PATCH \| DELETE .../documents[/:documentId]` | `artisan.write`        | Berkas wajib Media `PRIVATE`                                   |
+| `GET .../documents/:documentId/url`                   | `artisan.read_private` | Presigned GET; lihat catatan R2 di bawah                       |
 
 ### Field 🔒: dihapus, bukan dijadikan `null`
 
@@ -1298,18 +1309,18 @@ Kontrak §5.9, model §3.6 & §6.6. Dua lapis izin yang sama dengan produk;
 "draf" untuk artikel berarti `status === 'DRAFT'`, jadi artikel `SCHEDULED`
 sudah di luar jangkauan Contributor.
 
-| Method & path | Penanda izin | Catatan |
-| --- | --- | --- |
-| `GET /admin/articles` | `adminSession()` | `meta.counts`: `all`, `DRAFT`, `SCHEDULED`, `PUBLISHED`, `trash` |
-| `POST /admin/articles` | `article.write_draft` | `DRAFT`, penulis = diri sendiri; juga "Draf cepat" (Q1) |
-| `POST /admin/articles/bulk` | `article.write_draft` | Izin dicek **per item**; `BulkResult` |
-| `GET /admin/articles/:id` | `adminSession()` | Termasuk yang di Trash |
-| `PATCH /admin/articles/:id` | `article.write_draft` | `expectedUpdatedAt` wajib (§1.9) |
-| `POST /admin/articles/:id/publish` \| `/unpublish` | `article.publish` | `publishAt` masa depan = `SCHEDULED` |
-| `POST /admin/articles/:id/preview` | `article.write_draft` | DTO publik **tanpa menyimpan** |
-| `DELETE /admin/articles/:id` | `article.write_draft` | Trash; katalog `Permission` tidak punya `article.trash` |
-| `POST /admin/articles/:id/restore` | `article.restore` | **Selalu** `DRAFT`, `publishAt = null` (Q3) |
-| `DELETE /admin/articles/:id/permanent` | `article.purge` | Administrator saja (A3); komentar ikut terhapus |
+| Method & path                                      | Penanda izin          | Catatan                                                          |
+| -------------------------------------------------- | --------------------- | ---------------------------------------------------------------- |
+| `GET /admin/articles`                              | `adminSession()`      | `meta.counts`: `all`, `DRAFT`, `SCHEDULED`, `PUBLISHED`, `trash` |
+| `POST /admin/articles`                             | `article.write_draft` | `DRAFT`, penulis = diri sendiri; juga "Draf cepat" (Q1)          |
+| `POST /admin/articles/bulk`                        | `article.write_draft` | Izin dicek **per item**; `BulkResult`                            |
+| `GET /admin/articles/:id`                          | `adminSession()`      | Termasuk yang di Trash                                           |
+| `PATCH /admin/articles/:id`                        | `article.write_draft` | `expectedUpdatedAt` wajib (§1.9)                                 |
+| `POST /admin/articles/:id/publish` \| `/unpublish` | `article.publish`     | `publishAt` masa depan = `SCHEDULED`                             |
+| `POST /admin/articles/:id/preview`                 | `article.write_draft` | DTO publik **tanpa menyimpan**                                   |
+| `DELETE /admin/articles/:id`                       | `article.write_draft` | Trash; katalog `Permission` tidak punya `article.trash`          |
+| `POST /admin/articles/:id/restore`                 | `article.restore`     | **Selalu** `DRAFT`, `publishAt = null` (Q3)                      |
+| `DELETE /admin/articles/:id/permanent`             | `article.purge`       | Administrator saja (A3); komentar ikut terhapus                  |
 
 Contributor yang mengirim `slug` atau `authorId` ditolak `403 FORBIDDEN_FIELD`:
 URL publik adalah keputusan Editor+ (§6.1), dan `authorId` akan memindahkan
@@ -1363,7 +1374,7 @@ menautkan ke `/admin/articles/<id>`.
 
 Query publik **sudah** menganggap `SCHEDULED && publishAt <= now()` sebagai
 terbit, jadi artikel tayang tepat waktu tanpa job. Yang dikerjakan job adalah
-merapikan *state*: memindahkan status ke `PUBLISHED` dan mengisi `publishedAt`
+merapikan _state_: memindahkan status ke `PUBLISHED` dan mengisi `publishedAt`
 dari `publishAt`, sehingga daftar admin, hitungan tab, dan urutan `-publishedAt`
 tidak perlu mengulang aturan "sudah jatuh tempo" di setiap tempat.
 
@@ -1383,27 +1394,89 @@ Endpoint cron eksternal `POST /v1/internal/jobs/publish-scheduled` (kontrak
 §5.17) **belum** ada; seluruh `/v1/internal/*` menyusul bersama modul job
 eksternal.
 
+## Media Library (`/v1/admin/media/*`)
+
+Kontrak §5.12, model §3.2. Berkas **tidak pernah melewati API** (ADR K3):
+klien meminta izin unggah, meng-`PUT` langsung ke R2, lalu mengonfirmasi.
+
+```
+POST /v1/admin/media/uploads   → { uploadId, uploadUrl, headers, key, expiresAt }
+PUT  <uploadUrl>               (klien → R2, tanpa menyentuh API)
+POST /v1/admin/media           → 201 AdminMedia   (200 bila tiket diulang)
+```
+
+`uploadId` adalah token HMAC berisi `key`, `mimeType`, `sizeBytes`,
+`visibility`, `userId`, dan `exp` — sehingga tidak ada tabel unggahan
+sementara yang harus dibersihkan saat klien menutup tab di tengah unggahan.
+Kuncinya `MEDIA_UPLOAD_SECRET`, dipisah dari kredensial R2 karena masa hidup
+dan radius ledakannya berbeda.
+
+**Batas ukuran ditegakkan dua kali.** `Content-Length` ikut ditandatangani,
+jadi R2 sendiri menolak unggahan yang lebih besar; lalu konfirmasi memanggil
+`HeadObject` dan menolak `422 UPLOAD_INVALID` (`MISMATCH`) bila objek yang ada
+tetap berbeda. Satu lapis saja tidak cukup: yang pertama bisa dilewati bila
+bucket salah konfigurasi, yang kedua tidak menghalangi berkas besar terlanjur
+terunggah.
+
+**Dua tingkat "sedang dipakai"** (model §5), keduanya dihitung
+`modules/admin/media/usage.ts` supaya detail dan penjaga hapus tidak pernah
+berbeda pendapat:
+
+| Aksi                    | Syarat                                                                       |
+| ----------------------- | ---------------------------------------------------------------------------- |
+| `DELETE /:id` (Trash)   | tidak dirujuk konten **terbit** → selain itu `409 IN_USE` + `details.usages` |
+| `DELETE /:id/permanent` | sudah di Trash **dan** tidak dirujuk apa pun (FK `Restrict`)                 |
+
+Sembilan sumber rujukan punya kolom FK. Yang kesepuluh — blok gambar di dalam
+`Article.content` — tidak, jadi ia dicari lewat containment `jsonb`
+(`content @> [{"mediaId": …}]`). Tanpa query itu, menghapus gambar yang dipakai
+di tengah artikel terbit akan lolos diam-diam.
+
+**Penyimpangan dari kontrak yang perlu dicatat:** `MediaUsage.entityId`
+bertipe `string`, bukan `uuid`. `SiteSetting` adalah baris tunggal ber-`id`
+integer `1` (model §3.8), dan justru pemakai itulah yang paling tidak boleh
+hilang dari daftar.
+
+Media `PRIVATE` tidak pernah punya URL permanen: `AdminMedia.url` selalu
+`null` dan `GET /:id/url` menjawab presigned GET 5 menit. Contributor menerima
+`404` — bukan `403` — untuk media privat, sehingga keberadaannya pun tidak
+bocor. Dokumen pengrajin (`/v1/admin/artisans/:id/documents/:documentId/url`)
+memakai jalur presign yang sama; tidak ada penandatanganan kedua yang perlu
+dijaga terpisah.
+
+Tanpa `R2_*` dan `MEDIA_UPLOAD_SECRET`, rute yang butuh bucket menjawab
+`503 SERVICE_UNAVAILABLE` dan sisa Media Library tetap berfungsi penuh atas
+baris yang sudah ada. Lampiran inquiry (`POST /v1/public/inquiries/uploads`,
+kontrak §5.4) masih `503`: pengunggahnya pengunjung anonim, bukan sesi admin,
+sehingga butuh pembatasan tersendiri dan menyusul bersama modul inquiry.
+
+SDK `@aws-sdk/client-s3` di-`import()` saat pertama dipakai, bukan saat modul
+dimuat. Build ESM-nya ditujukan untuk bundler (impor relatif tanpa ekstensi)
+dan tidak bisa dimuat pemuat ESM Vite; memuatnya hanya di jalur yang benar-benar
+menyentuh R2 membuat seluruh test suite — yang memakai dobel in-memory — tidak
+pernah menyentuhnya.
+
 ## Script
 
 Jalankan dengan `npm run <script> --workspace backend` dari root, atau
 `npm run <script>` di dalam `backend/`.
 
-| Script | Fungsi |
-| --- | --- |
-| `dev` | Server dengan reload otomatis (`tsx watch`, shared dari `src/`) |
-| `build` | `prisma generate` lalu kompilasi ke `dist/` |
-| `start` | Jalankan hasil build (`node dist/server.js`) |
-| `typecheck` | `tsc --noEmit` (butuh `packages/shared/dist`) |
-| `lint` | ESLint |
-| `format` / `format:check` | Prettier (tulis / cek saja) |
-| `test` | Semua tes sekali jalan (unit + integration) |
-| `test:unit` / `test:integration` | Satu project Vitest |
-| `test:watch` | Vitest mode watch |
-| `db:generate` | `prisma generate` |
-| `db:migrate` | `prisma migrate dev` (buat + terapkan migrasi, dev) |
-| `db:migrate:deploy` | `prisma migrate deploy` (terapkan migrasi yang ada) |
-| `db:seed` | Isi database dev/tes dengan data mockup (**menghapus isi DB lebih dulu**) |
-| `db:studio` | Prisma Studio |
+| Script                           | Fungsi                                                                    |
+| -------------------------------- | ------------------------------------------------------------------------- |
+| `dev`                            | Server dengan reload otomatis (`tsx watch`, shared dari `src/`)           |
+| `build`                          | `prisma generate` lalu kompilasi ke `dist/`                               |
+| `start`                          | Jalankan hasil build (`node dist/server.js`)                              |
+| `typecheck`                      | `tsc --noEmit` (butuh `packages/shared/dist`)                             |
+| `lint`                           | ESLint                                                                    |
+| `format` / `format:check`        | Prettier (tulis / cek saja)                                               |
+| `test`                           | Semua tes sekali jalan (unit + integration)                               |
+| `test:unit` / `test:integration` | Satu project Vitest                                                       |
+| `test:watch`                     | Vitest mode watch                                                         |
+| `db:generate`                    | `prisma generate`                                                         |
+| `db:migrate`                     | `prisma migrate dev` (buat + terapkan migrasi, dev)                       |
+| `db:migrate:deploy`              | `prisma migrate deploy` (terapkan migrasi yang ada)                       |
+| `db:seed`                        | Isi database dev/tes dengan data mockup (**menghapus isi DB lebih dulu**) |
+| `db:studio`                      | Prisma Studio                                                             |
 
 Di root: `db:up` / `db:down` untuk container PostgreSQL, `test` untuk tes backend.
 

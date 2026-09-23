@@ -4,9 +4,11 @@ import Fastify, { LogController, type FastifyInstance } from 'fastify';
 
 import type { Env } from './config/env.js';
 import type { PrismaClient } from './generated/prisma/client.js';
+import { createR2Client, type R2 } from './lib/r2.js';
 import { NoopEmailSender, type EmailSender } from './modules/email/sender.js';
 import { adminArticlesRoutes } from './modules/admin/articles/routes.js';
 import { adminArtisansRoutes } from './modules/admin/artisans/routes.js';
+import { adminMediaRoutes } from './modules/admin/media/routes.js';
 import { adminProductsRoutes } from './modules/admin/products/routes.js';
 import { adminTaxonomyRoutes } from './modules/admin/taxonomy/routes.js';
 import { registerAuthGuard } from './modules/auth/guard.js';
@@ -92,6 +94,20 @@ export interface BuildAppOptions {
    * interval (dipakai tes yang ingin membuktikan timernya benar-benar jalan).
    */
   scheduledPublish?: boolean | { intervalMs?: number };
+  /**
+   * Penyimpanan objek R2 (ADR K3). Default dibentuk dari `config.R2_*`, dan
+   * `null` bila salah satunya kosong — rute yang butuh bucket lalu menjawab
+   * `503`. Tes memakai dobel in-memory agar alur presign → konfirmasi bisa
+   * dibuktikan tanpa bucket sungguhan.
+   */
+  r2?: R2 | null;
+  /** Kunci HMAC tiket unggah (kontrak §5.12). Default `config.MEDIA_UPLOAD_SECRET`. */
+  uploadSecret?: string | undefined;
+  /**
+   * Basis URL publik R2 (ADR K3). Default `config.R2_PUBLIC_URL`; dipisah agar
+   * tes bisa membuktikan bentuk `AdminMedia.url` tanpa membangun seluruh `Env`.
+   */
+  mediaPublicUrl?: string | undefined;
 }
 
 /**
@@ -156,8 +172,26 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
   registerAuthGuard(app);
 
   void app.register(healthRoutes, { prefix: '/v1' });
+
+  /**
+   * Satu klien R2 dipakai bersama modul media dan unduhan dokumen pengrajin:
+   * dokumen 🔒 adalah Media `PRIVATE` biasa, jadi tidak ada jalur presign
+   * kedua yang perlu dijaga terpisah. `null` bila `R2_*` belum lengkap.
+   */
+  const r2 =
+    options.r2 ??
+    createR2Client({
+      ...(config?.R2_ACCOUNT_ID === undefined ? {} : { accountId: config.R2_ACCOUNT_ID }),
+      ...(config?.R2_ACCESS_KEY_ID === undefined ? {} : { accessKeyId: config.R2_ACCESS_KEY_ID }),
+      ...(config?.R2_SECRET_ACCESS_KEY === undefined
+        ? {}
+        : { secretAccessKey: config.R2_SECRET_ACCESS_KEY }),
+      ...(config?.R2_BUCKET === undefined ? {} : { bucket: config.R2_BUCKET }),
+    });
+
+  const resolvedMediaPublicUrl = options.mediaPublicUrl ?? config?.R2_PUBLIC_URL;
   const mediaPublicUrl =
-    config?.R2_PUBLIC_URL === undefined ? {} : { mediaPublicUrl: config.R2_PUBLIC_URL };
+    resolvedMediaPublicUrl === undefined ? {} : { mediaPublicUrl: resolvedMediaPublicUrl };
 
   void app.register(authRoutes, {
     prefix: '/v1',
@@ -169,8 +203,16 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
   });
   void app.register(usersRoutes, { prefix: '/v1', ...mediaPublicUrl });
   void app.register(adminProductsRoutes, { prefix: '/v1', ...mediaPublicUrl });
-  void app.register(adminArtisansRoutes, { prefix: '/v1', ...mediaPublicUrl });
+  void app.register(adminArtisansRoutes, { prefix: '/v1', ...mediaPublicUrl, r2 });
   void app.register(adminArticlesRoutes, { prefix: '/v1', ...mediaPublicUrl });
+  void app.register(adminMediaRoutes, {
+    prefix: '/v1',
+    ...mediaPublicUrl,
+    r2,
+    ...((options.uploadSecret ?? config?.MEDIA_UPLOAD_SECRET) === undefined
+      ? {}
+      : { uploadSecret: options.uploadSecret ?? config?.MEDIA_UPLOAD_SECRET }),
+  });
   void app.register(adminTaxonomyRoutes, { prefix: '/v1' });
   void app.register(invitesRoutes, {
     prefix: '/v1',
