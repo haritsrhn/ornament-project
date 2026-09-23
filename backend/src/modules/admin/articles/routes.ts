@@ -35,17 +35,18 @@ import {
   type PageMeta,
   type Permission,
 } from '@ornament/shared';
-import type { FastifyRequest } from 'fastify';
+import type { FastifyBaseLogger, FastifyRequest } from 'fastify';
 import type { FastifyPluginAsyncZod } from 'fastify-type-provider-zod';
 import { z } from 'zod';
 
 import type { Prisma } from '../../../generated/prisma/client.js';
-import { AppError, isAppError, notFound } from '../../../lib/errors.js';
+import { AppError, notFound } from '../../../lib/errors.js';
 import { ok } from '../../../lib/http.js';
 import { withIdempotency } from '../../../lib/idempotency.js';
 import { escapeLike } from '../../../lib/like.js';
 import { adminRateLimit } from '../../../lib/rate-limit.js';
 import { adminPermission, adminSession, currentSession } from '../../auth/guard.js';
+import { collectBulkResult } from '../bulk.js';
 import { assertCanPreview, assertCanRestore, assertCanWrite } from './access.js';
 import {
   adminArticleRowSelect,
@@ -257,7 +258,7 @@ export const adminArticlesRoutes: FastifyPluginAsyncZod<AdminArticlesRoutesOptio
       }
       const run = async () => ({
         statusCode: 200,
-        body: ok(await runBulk(actor, body)) satisfies BulkEnvelope,
+        body: ok(await runBulk(actor, request.log, body)) satisfies BulkEnvelope,
       });
       if (key === undefined) return (await run()).body;
 
@@ -274,25 +275,14 @@ export const adminArticlesRoutes: FastifyPluginAsyncZod<AdminArticlesRoutesOptio
 
   /**
    * Setiap item dicek izinnya sendiri-sendiri dan kegagalannya dikumpulkan
-   * (kontrak §5: sukses parsial diizinkan, selalu `200`). Berurutan, bukan
-   * `Promise.all`: aksi massal menulis ke tabel yang sama dan urutan hasil
-   * harus bisa diprediksi.
+   * (kontrak §5: sukses parsial diizinkan, selalu `200`).
    */
   async function runBulk(
     actor: AdminActor,
+    log: FastifyBaseLogger,
     body: { action: ArticleBulkAction; ids: string[] },
   ): Promise<BulkResult> {
-    const result: BulkResult = { succeeded: [], failed: [] };
-    for (const id of body.ids) {
-      try {
-        await runBulkItem(actor, body.action, id);
-        result.succeeded.push(id);
-      } catch (error) {
-        if (!isAppError(error)) throw error;
-        result.failed.push({ id, code: error.code, message: error.message });
-      }
-    }
-    return result;
+    return collectBulkResult(body.ids, log, (id) => runBulkItem(actor, body.action, id));
   }
 
   async function runBulkItem(
