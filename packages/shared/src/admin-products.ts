@@ -5,7 +5,6 @@ import {
   bulkResultSchema,
   BULK_IDS_MAX,
   moneyInputSchema,
-  richTextSchema,
   searchQuerySchema,
   slugInputSchema,
 } from './common.js';
@@ -18,6 +17,7 @@ import {
   type StockStatus,
 } from './enums.js';
 import { mediaRefSchema } from './auth.js';
+import { richTextSchema } from './rich-text.js';
 import { pageMetaSchema, pageQuerySchema } from './pagination.js';
 import { userRefSchema } from './users.js';
 

@@ -4,13 +4,13 @@ import { mediaRefSchema } from './auth.js';
 import {
   booleanFlagSchema,
   expectedUpdatedAtSchema,
-  richTextSchema,
   searchQuerySchema,
   slugInputSchema,
 } from './common.js';
 import { dataEnvelope, dataMetaEnvelope } from './envelope.js';
 import { artisanDocumentKindSchema, artisanStatusSchema } from './enums.js';
 import { pageMetaSchema, pageQuerySchema } from './pagination.js';
+import { richTextSchema } from './rich-text.js';
 import { userRefSchema } from './users.js';
 
 /**

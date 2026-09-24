@@ -8,6 +8,12 @@ import {
   PUBLIC_CURSOR_LIMITS,
 } from './pagination.js';
 import { filterSlugSchema } from './products.js';
+import {
+  headingBlockSchema,
+  paragraphBlockSchema,
+  quoteBlockSchema,
+  richTextBlockIdSchema,
+} from './rich-text.js';
 
 /**
  * Kontrak artikel & komentar publik — kontrak API §5.3
@@ -31,63 +37,18 @@ import { filterSlugSchema } from './products.js';
  * publik, dan frontend mendapat union yang bisa ditelusuri per `type`.
  */
 
-/**
- * Skema tautan yang boleh muncul di isi artikel.
- *
- * Isi artikel ditulis peran serendah CONTRIBUTOR dan disajikan apa adanya ke
- * jurnal publik maupun pratinjau admin, jadi `href` divalidasi di kontrak
- * — bukan di renderer — agar `javascript:`/`data:` (XSS tersimpan) dan
- * `//evil.tld` (open redirect protokol-relatif) tidak pernah tersimpan.
- */
-const ARTICLE_HREF_PATTERN = /^(?:https?:\/\/|mailto:|\/(?!\/)|#)/i;
-
-/** Potongan teks dengan mark `bold`/`italic`/tautan (model §3.6: `RichInline`). */
-export const richInlineSchema = z.object({
-  text: z.string(),
-  bold: z.boolean().optional(),
-  italic: z.boolean().optional(),
-  href: z
-    .string()
-    .max(2048)
-    .regex(ARTICLE_HREF_PATTERN, 'Tautan harus http(s), mailto, path relatif, atau anchor.')
-    .optional(),
-});
-export type RichInline = z.infer<typeof richInlineSchema>;
-
-/** `id` blok: stabil per blok, dipakai editor admin sebagai kunci (kontrak §5.9). */
-export const articleBlockIdSchema = z.string().min(1).max(64);
-
-export const articleParagraphBlockSchema = z.object({
-  id: articleBlockIdSchema,
-  type: z.literal('paragraph'),
-  text: z.array(richInlineSchema),
-});
-
-export const articleHeadingBlockSchema = z.object({
-  id: articleBlockIdSchema,
-  type: z.literal('heading2'),
-  text: z.string(),
-});
-
-export const articleQuoteBlockSchema = z.object({
-  id: articleBlockIdSchema,
-  type: z.literal('quote'),
-  text: z.string(),
-  cite: z.string().optional(),
-});
-
 /** Blok gambar **tersimpan**: hanya `mediaId`; URL-nya di-resolve saat dibaca. */
 export const articleImageBlockSchema = z.object({
-  id: articleBlockIdSchema,
+  id: richTextBlockIdSchema,
   type: z.literal('image'),
   mediaId: z.uuid(),
   caption: z.string().optional(),
 });
 
 export const articleBlockSchema = z.discriminatedUnion('type', [
-  articleParagraphBlockSchema,
-  articleHeadingBlockSchema,
-  articleQuoteBlockSchema,
+  paragraphBlockSchema,
+  headingBlockSchema,
+  quoteBlockSchema,
   articleImageBlockSchema,
 ]);
 export type ArticleBlock = z.infer<typeof articleBlockSchema>;
@@ -105,16 +66,16 @@ export type ArticleContent = z.infer<typeof articleContentSchema>;
  * alih-alih dikirim tanpa gambar.
  */
 export const publicArticleImageBlockSchema = z.object({
-  id: articleBlockIdSchema,
+  id: richTextBlockIdSchema,
   type: z.literal('image'),
   image: publicMediaSchema,
   caption: z.string().optional(),
 });
 
 export const publicArticleBlockSchema = z.discriminatedUnion('type', [
-  articleParagraphBlockSchema,
-  articleHeadingBlockSchema,
-  articleQuoteBlockSchema,
+  paragraphBlockSchema,
+  headingBlockSchema,
+  quoteBlockSchema,
   publicArticleImageBlockSchema,
 ]);
 export type PublicArticleBlock = z.infer<typeof publicArticleBlockSchema>;

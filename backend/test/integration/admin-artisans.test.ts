@@ -563,6 +563,89 @@ describe('dokumen 🔒 (kontrak §5.8, model §3.4)', () => {
     }
   });
 
+  test('story wajib berbentuk blok rich text, bukan JSON bebas', async () => {
+    // Dulu `story` hanya dijamin "JSON valid", padahal ia ikut disajikan ke
+    // profil pengrajin publik tanpa jaminan bentuk bagi renderer.
+    const bebas = await adminRequest(app, {
+      method: 'POST',
+      url: '/v1/admin/artisans',
+      token: editor.token,
+      payload: artisanBody(`story-bebas-${s}`, { story: { paragraf: 'apa saja' } }),
+    });
+    expect(bebas.statusCode).toBe(400);
+    expect(errorBody(bebas).code).toBe('VALIDATION_FAILED');
+
+    const xss = await adminRequest(app, {
+      method: 'POST',
+      url: '/v1/admin/artisans',
+      token: editor.token,
+      payload: artisanBody(`story-xss-${s}`, {
+        story: [
+          { id: 'p1', type: 'paragraph', text: [{ text: 'Klik', href: 'javascript:alert(1)' }] },
+        ],
+      }),
+    });
+    expect(xss.statusCode).toBe(400);
+
+    const valid = await createViaApi(`story-valid-${s}`, {
+      story: [
+        { id: 'p1', type: 'paragraph', text: [{ text: 'Workshop keluarga.', href: '/kontak' }] },
+        { id: 'h1', type: 'heading2', text: 'Proses' },
+      ],
+    });
+    expect(Array.isArray(valid.story)).toBe(true);
+  });
+
+  test('dua request bersamaan atas media yang sama: satu menang, satu MEDIA_ALREADY_USED', async () => {
+    const artisan = await createViaApi(`dokumen-balapan-${s}`);
+    const mediaId = await createMedia(prisma, ids, {
+      key: `dokumen-balapan-${s}`,
+      visibility: 'PRIVATE',
+      alt: null,
+    });
+
+    const payload = { mediaId, kind: 'CONTRACT', title: 'Perjanjian' };
+    const [first, second] = await Promise.all([
+      adminRequest(app, {
+        method: 'POST',
+        url: `/v1/admin/artisans/${artisan.id}/documents`,
+        token: editor.token,
+        payload,
+      }),
+      adminRequest(app, {
+        method: 'POST',
+        url: `/v1/admin/artisans/${artisan.id}/documents`,
+        token: editor.token,
+        payload,
+      }),
+    ]);
+
+    // Satu berkas privat hanya boleh punya satu dokumen (kontrak §5.8).
+    // Pemeriksaan `findFirst` + `create` saja bisa dibalap; yang menegakkan
+    // aturannya adalah indeks unik `media_id`.
+    const statuses = [first.statusCode, second.statusCode].sort((a, b) => a - b);
+    expect(statuses).toEqual([201, 422]);
+
+    // Yang kalah mendapat jawaban domain yang sama dengan yang datang
+    // belakangan secara berurutan — bukan `500`.
+    const loser = first.statusCode === 422 ? first : second;
+    expect(errorBody(loser).code).toBe('BUSINESS_RULE_VIOLATION');
+    expect(errorBody(loser).details).toMatchObject({ rule: 'MEDIA_ALREADY_USED' });
+
+    expect(await prisma.artisanDocument.count({ where: { mediaId } })).toBe(1);
+
+    // Dua request di atas bisa saja terserialisasi oleh pool koneksi, sehingga
+    // yang menolak justru pemeriksaan `findFirst`. Yang membuktikan lombanya
+    // benar-benar tertutup adalah database itu sendiri: menulis langsung,
+    // melewati service, tetap ditolak.
+    await expect(
+      prisma.artisanDocument.create({
+        data: { artisanId: artisan.id, mediaId, kind: 'IDENTITY', title: 'Lewat service' },
+        select: { id: true },
+      }),
+    ).rejects.toMatchObject({ code: 'P2002' });
+  });
+
   test('menghapus dokumen memindahkan Media-nya ke Trash', async () => {
     const artisan = await createViaApi(`hapus-dokumen-${s}`);
     const mediaId = await createMedia(prisma, ids, {

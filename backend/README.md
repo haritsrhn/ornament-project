@@ -859,6 +859,14 @@ disembunyikan alih-alih dikirim setengah jadi.
 Blok `image` menukar `mediaId` dengan `PublicMedia`; blok yang medianya hilang
 atau `PRIVATE` ikut dibuang, sama seperti galeri produk.
 
+`Artisan.story` dan `Product.description` memakai `richTextSchema`
+(`packages/shared/src/rich-text.ts`): blok teks yang sama dikurangi `image`,
+karena keduanya tidak punya jalur penukaran `mediaId` → `PublicMedia` saat
+dibaca. Sebelumnya keduanya hanya dijamin "JSON valid" padahal ikut disajikan
+ke halaman publik, jadi renderer tidak punya jaminan bentuk dan `href` di
+dalamnya tidak pernah divalidasi. Batasnya 60 blok, lebih kecil daripada
+artikel (200), karena keduanya teks pendamping — bukan tulisan panjang.
+
 `excerpt` DTO publik selalu terisi: bila kolomnya kosong ia diturunkan dari
 paragraf pertama, maks 200 karakter.
 
@@ -1291,7 +1299,10 @@ aturan media publik:
 - media yang sudah menjadi dokumen lain → `422 MEDIA_ALREADY_USED` (aturan
   tambahan di luar daftar kontrak §5.8: satu berkas privat hanya boleh punya
   satu pemilik, supaya menghapus dokumen tidak membuat dokumen lain kehilangan
-  berkasnya);
+  berkasnya). Yang **menegakkan** aturan ini adalah indeks unik
+  `artisan_document.media_id`, bukan pemeriksaan `findFirst` di service:
+  `findFirst` + `create` bisa dibalap dua request bersamaan, dan pihak yang
+  kalah menerima `422` yang sama, bukan `500`;
 - menghapus dokumen memindahkan **Media**-nya ke Trash (pemulihan 30 hari §6.4),
   bukan menghapus objek R2.
 

@@ -530,7 +530,11 @@ model ArtisanDocument {
 
   @@index([artisanId])
   @@index([artisanId, kind])
-  @@index([mediaId])
+  // Satu berkas privat hanya boleh punya satu dokumen (kontrak §5.8): tanpa
+  // constraint ini, dua request bersamaan sama-sama lolos pemeriksaan
+  // MEDIA_ALREADY_USED dan menghapus salah satunya membuat dokumen tersisa
+  // kehilangan berkasnya. Unik sekaligus menggantikan indeks pencariannya.
+  @@unique([mediaId])
   @@index([uploadedById])
   @@map("artisan_document")
 }

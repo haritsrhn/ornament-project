@@ -430,38 +430,50 @@ export async function createArtisanDocument(
   },
 ): Promise<string> {
   const { actor, artisanId, input } = options;
-  return prisma.$transaction(async (tx) => {
-    await assertPrivateMedia(tx, input.mediaId);
-    const existing = await tx.artisanDocument.findFirst({
-      where: { mediaId: input.mediaId },
-      select: { id: true },
-    });
-    if (existing !== null) {
-      throw businessRuleViolation(
-        ARTISAN_BUSINESS_RULES.MEDIA_ALREADY_USED,
-        'Berkas ini sudah terdaftar sebagai dokumen pengrajin.',
-      );
-    }
-
-    const document = await tx.artisanDocument.create({
-      data: {
-        artisanId,
-        mediaId: input.mediaId,
-        kind: input.kind as Prisma.ArtisanDocumentCreateInput['kind'],
-        title: input.title,
-        uploadedById: actor.id,
-      },
-      select: { id: true },
-    });
-    await logArtisanActivity(
-      tx,
-      actor.id,
-      'artisan.document_added',
-      `Dokumen "${input.title}" ditambahkan`,
-      artisanId,
+  const mediaAlreadyUsed = (): AppError =>
+    businessRuleViolation(
+      ARTISAN_BUSINESS_RULES.MEDIA_ALREADY_USED,
+      'Berkas ini sudah terdaftar sebagai dokumen pengrajin.',
     );
-    return document.id;
-  });
+
+  try {
+    return await prisma.$transaction(async (tx) => {
+      await assertPrivateMedia(tx, input.mediaId);
+      // Pemeriksaan ini hanya untuk pesan yang enak dibaca pada kasus biasa.
+      // Yang **menegakkan** aturannya adalah indeks unik di `media_id`: dua
+      // request bersamaan sama-sama melihat `null` di sini, dan hanya satu
+      // yang bisa lolos `create` (ditangkap di bawah).
+      const existing = await tx.artisanDocument.findFirst({
+        where: { mediaId: input.mediaId },
+        select: { id: true },
+      });
+      if (existing !== null) throw mediaAlreadyUsed();
+
+      const document = await tx.artisanDocument.create({
+        data: {
+          artisanId,
+          mediaId: input.mediaId,
+          kind: input.kind as Prisma.ArtisanDocumentCreateInput['kind'],
+          title: input.title,
+          uploadedById: actor.id,
+        },
+        select: { id: true },
+      });
+      await logArtisanActivity(
+        tx,
+        actor.id,
+        'artisan.document_added',
+        `Dokumen "${input.title}" ditambahkan`,
+        artisanId,
+      );
+      return document.id;
+    });
+  } catch (error) {
+    // Pihak yang kalah lomba mendapat jawaban yang sama persis dengan pihak
+    // yang datang belakangan secara berurutan — bukan `500`.
+    if (isUniqueViolation(error)) throw mediaAlreadyUsed();
+    throw error;
+  }
 }
 
 /**
