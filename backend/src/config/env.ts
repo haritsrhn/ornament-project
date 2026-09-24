@@ -9,7 +9,12 @@ const emptyToUndefined = (value: unknown) => (value === '' ? undefined : value);
 const optionalString = z.preprocess(emptyToUndefined, z.string().optional());
 const optionalUrl = z.preprocess(emptyToUndefined, z.url().optional());
 
-const SECRET_KEYS = ['INTERNAL_API_KEY', 'INTERNAL_JOB_TOKEN', 'REVALIDATE_SECRET'] as const;
+const SECRET_KEYS = [
+  'INTERNAL_API_KEY',
+  'INTERNAL_JOB_TOKEN',
+  'REVALIDATE_SECRET',
+  'MEDIA_UPLOAD_SECRET',
+] as const;
 
 const envSchema = z
   .object({
@@ -44,6 +49,12 @@ const envSchema = z
     R2_SECRET_ACCESS_KEY: optionalString,
     R2_BUCKET: optionalString,
     R2_PUBLIC_URL: optionalUrl,
+    /**
+     * Kunci HMAC `uploadId` (kontrak §5.12). Dipisah dari kredensial R2 dengan
+     * sengaja: tiket unggah dan akses bucket punya masa hidup dan radius
+     * ledakan yang berbeda, jadi memutar salah satunya tidak memaksa yang lain.
+     */
+    MEDIA_UPLOAD_SECRET: optionalString,
     /** Resend (ADR K4). Wajib sejak modul email. */
     RESEND_API_KEY: optionalString,
     RESEND_FROM: optionalString,

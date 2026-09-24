@@ -27,6 +27,7 @@ import {
   artisanInputSchema,
   ARTISAN_ARCHIVE_WARNINGS,
   ARTISAN_STATUSES,
+  MEDIA_DOWNLOAD_TTL_SECONDS,
   roleHasPermission,
   updateArtisanBodySchema,
   updateArtisanDocumentBodySchema,
@@ -44,6 +45,7 @@ import { AppError, notFound } from '../../../lib/errors.js';
 import { ok } from '../../../lib/http.js';
 import { escapeLike } from '../../../lib/like.js';
 import { adminRateLimit } from '../../../lib/rate-limit.js';
+import type { R2 } from '../../../lib/r2.js';
 import { adminPermission, adminSession, currentSession } from '../../auth/guard.js';
 import {
   adminArtisanRowSelect,
@@ -70,6 +72,8 @@ import {
 export interface AdminArtisansRoutesOptions {
   /** Basis URL publik R2 untuk `MediaRef.url` (ADR K3). */
   mediaPublicUrl?: string | undefined;
+  /** Penyimpanan objek; `null` → unduhan dokumen privat menjawab `503`. */
+  r2?: R2 | null;
 }
 
 interface AdminActor {
@@ -118,6 +122,7 @@ export const adminArtisansRoutes: FastifyPluginAsyncZod<AdminArtisansRoutesOptio
   options,
 ) => {
   const mediaPublicUrl = options.mediaPublicUrl;
+  const r2 = options.r2 ?? null;
   const rateLimit = adminRateLimit();
 
   /** Baca: semua peran (kontrak §3.1 "Mengelola pengrajin: CTR = Lihat"). */
@@ -413,30 +418,32 @@ export const adminArtisansRoutes: FastifyPluginAsyncZod<AdminArtisansRoutesOptio
       const { id, documentId } = request.params;
       const document = await app.prisma.artisanDocument.findFirst({
         where: { id: documentId, artisanId: id },
-        select: { id: true },
+        select: { mediaId: true, media: { select: { key: true, fileName: true } } },
       });
       // `404` lebih dulu: peminta yang menebak id dokumen tidak boleh bisa
       // membedakan "ada tapi belum bisa diunduh" dari "tidak ada".
       if (document === null) throw notFound('Dokumen tidak ditemukan.');
 
       /**
-       * Presigned GET ke R2 ditunda ke **Tahap 7 (Media)**, dengan alasan yang
-       * sama seperti presign lampiran inquiry (lihat
-       * `modules/public/inquiries/routes.ts`): menandatangani SigV4
-       * membutuhkan `@aws-sdk/client-s3` + `s3-request-presigner` yang belum
-       * ada di dependensi, dan `R2_*` belum terisi sehingga hasilnya tidak
-       * bisa diverifikasi terhadap bucket sungguhan.
-       *
-       * Yang **sudah** berlaku di sini adalah seluruh kontrak di sekelilingnya:
-       * izin Editor+ (`artisan.read_private`), dokumen harus milik pengrajin
-       * yang diminta, dan `404` untuk yang bukan. Yang tersisa hanyalah
-       * penandatanganan — dijawab `503`, bukan `200` dengan URL yang tidak
-       * bisa dipakai.
+       * Penandatanganan dilakukan modul media (kontrak §5.12): dokumen
+       * pengrajin adalah Media `PRIVATE` biasa, jadi tidak ada jalur presign
+       * kedua yang perlu dijaga terpisah. Tanpa `R2_*`, `presignGet` tidak ada
+       * dan rute ini menjawab `503` seperti sebelumnya.
        */
-      throw new AppError(
-        'SERVICE_UNAVAILABLE',
-        'Unduhan dokumen privat belum tersedia. Modul media (unggah & URL bertanda tangan) menyusul di tahap berikutnya.',
-      );
+      if (r2 === null) {
+        throw new AppError(
+          'SERVICE_UNAVAILABLE',
+          'Penyimpanan berkas belum dikonfigurasi. Hubungi administrator.',
+        );
+      }
+
+      const expiresAt = new Date(Date.now() + MEDIA_DOWNLOAD_TTL_SECONDS * 1000);
+      const url = await r2.presignGet({
+        key: document.media.key,
+        expiresInSeconds: MEDIA_DOWNLOAD_TTL_SECONDS,
+        ...(request.query.download ? { downloadAs: document.media.fileName } : {}),
+      });
+      return ok({ url, expiresAt: expiresAt.toISOString() });
     },
   );
 

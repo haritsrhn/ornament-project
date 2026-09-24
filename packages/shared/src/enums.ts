@@ -30,6 +30,23 @@ export const CATEGORY_TYPES = ['PRODUCT', 'ARTICLE'] as const;
 export const categoryTypeSchema = z.enum(CATEGORY_TYPES);
 export type CategoryType = z.infer<typeof categoryTypeSchema>;
 
+/**
+ * Media (model §3.2). `kind` diturunkan dari MIME saat upload dikonfirmasi —
+ * bukan dikirim klien — dan dipakai filter "Gambar / Dokumen" di Media Library.
+ */
+export const MEDIA_KINDS = ['IMAGE', 'DOCUMENT'] as const;
+export const mediaKindSchema = z.enum(MEDIA_KINDS);
+export type MediaKind = z.infer<typeof mediaKindSchema>;
+
+/**
+ * `PRIVATE` adalah berkas yang tidak boleh punya URL permanen: dokumen
+ * pengrajin (KTP, rekening) dan lampiran inquiry. Objeknya berprefix
+ * `private/` di R2 dan hanya bisa dibuka lewat presigned GET berdurasi pendek.
+ */
+export const MEDIA_VISIBILITIES = ['PUBLIC', 'PRIVATE'] as const;
+export const mediaVisibilitySchema = z.enum(MEDIA_VISIBILITIES);
+export type MediaVisibility = z.infer<typeof mediaVisibilitySchema>;
+
 export const ARTISAN_STATUSES = ['VERIFICATION', 'ACTIVE', 'FULL_CAPACITY'] as const;
 export const artisanStatusSchema = z.enum(ARTISAN_STATUSES);
 export type ArtisanStatus = z.infer<typeof artisanStatusSchema>;

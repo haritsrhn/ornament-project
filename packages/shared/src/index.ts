@@ -15,6 +15,7 @@ export * from './enums.js';
 export * from './errors.js';
 export * from './health.js';
 export * from './inquiries.js';
+export * from './media.js';
 export * from './pagination.js';
 export * from './products.js';
 export * from './site.js';
