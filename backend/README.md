@@ -1240,6 +1240,25 @@ pada `P2002`; yang tersedia hanya nama indeks Postgres di
 (`details.fields: ["skuCode"]`). Tanpa itu setiap konflik jatuh ke tebakan
 default dan UI menyorot field yang salah.
 
+### Siapa boleh membuat tag baru
+
+`Tag` adalah satu tabel untuk produk **dan** artikel (model §3.3), jadi
+menambah baris di sana adalah menulis taksonomi — `taxonomy.write`, Editor+
+(§3.1) — bukan menulis draf sendiri. Tag tidak punya endpoint `POST`: ia lahir
+implisit dari `tags: string[]` saat produk atau artikel disimpan, sehingga
+batasnya ditegakkan di `modules/admin/tags.ts`, bukan di guard rute.
+
+Contributor tetap bebas **memakai** tag yang sudah ada — yang datang dari
+autocomplete `GET /v1/admin/tags` — tetapi nama yang belum ada dijawab
+`403 FORBIDDEN` dengan `details.reason = "TAG_NOT_FOUND"` dan
+`details.unknownTags` berisi semua nama yang tidak ditemukan sekaligus, agar
+editor yang mengetik tiga tag baru tahu ketiganya dalam satu kali simpan.
+
+Menolak lebih baik daripada membuang diam-diam: tag yang hilang tanpa kabar
+akan tampak seperti bug penyimpanan, dan lebih baik daripada membiarkannya
+karena peran paling tidak privileged tidak seharusnya bisa menumbuhkan
+taksonomi yang dikurasi Editor.
+
 ## Admin pengrajin (`/v1/admin/artisans/*`)
 
 Kontrak §5.8, model §3.4 & §6.7. Berbeda dengan produk dan artikel, pengrajin

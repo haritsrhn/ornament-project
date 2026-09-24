@@ -13,6 +13,7 @@ import {
   deriveStockStatus,
   PRODUCT_BUSINESS_RULES,
   QC_STAGES,
+  roleHasPermission,
   stockQuantityConflictsWithStatus,
   type AdminProduct,
   type ProductInput,
@@ -20,6 +21,7 @@ import {
   type QcStatus,
   type StockStatus,
   type UpdateProductBody,
+  type UserRole,
 } from '@ornament/shared';
 
 import { Prisma } from '../../../generated/prisma/client.js';
@@ -46,6 +48,8 @@ export type Tx = Prisma.TransactionClient;
 export interface Actor {
   id: string;
   name: string;
+  /** Dibutuhkan untuk memutuskan boleh-tidaknya membuat tag baru (§3.1). */
+  role: UserRole;
 }
 
 // ── Ambang Low Stock global (model §6.3 Q13) ─────────────────────────────────
@@ -315,6 +319,7 @@ function scalarData(input: PartialProductWrite): Prisma.ProductUncheckedUpdateIn
 async function syncRelations(
   tx: Tx,
   productId: string,
+  actor: Actor,
   input: {
     materials?: { materialId: string; isPrimary: boolean }[] | undefined;
     tags?: string[] | undefined;
@@ -340,7 +345,9 @@ async function syncRelations(
   }
 
   if (input.tags !== undefined) {
-    const tagIds = await resolveTagIds(tx, input.tags);
+    const tagIds = await resolveTagIds(tx, input.tags, {
+      canCreate: roleHasPermission(actor.role, 'taxonomy.write'),
+    });
     await tx.productTag.deleteMany({ where: { productId } });
     if (tagIds.length > 0) {
       await tx.productTag.createMany({ data: tagIds.map((tagId) => ({ productId, tagId })) });
@@ -445,7 +452,7 @@ export async function createProduct(
       // Slug baru mungkin tercatat sebagai redirect lama milik produk lain:
       // slug aktif selalu menang (§6.10).
       await releaseRedirectFor(tx, slug);
-      await syncRelations(tx, created.id, input);
+      await syncRelations(tx, created.id, actor, input);
 
       await logProductActivity(
         tx,
@@ -576,7 +583,7 @@ export async function updateProduct(
       if (nextSlug !== current.slug) {
         await recordSlugRedirect(tx, productId, current.slug, nextSlug);
       }
-      await syncRelations(tx, productId, input);
+      await syncRelations(tx, productId, actor, input);
 
       // Produk yang sedang tayang tidak boleh diturunkan menjadi tidak layak
       // tayang lewat pintu belakang `PATCH` (kontrak §5.6).

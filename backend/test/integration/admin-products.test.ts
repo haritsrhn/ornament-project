@@ -1088,6 +1088,40 @@ describe('relasi produk (§1.3, §5.6)', () => {
     expect(dataOf(res).specs).toEqual([]);
   });
 
+  test('Contributor tidak bisa menambah tag baru, tetapi boleh memakai yang sudah ada', async () => {
+    // Aturan yang sama dengan artikel: `Tag` satu tabel untuk keduanya, jadi
+    // membuat baris di sana adalah `taxonomy.write` (Editor+), bukan menulis
+    // draf sendiri.
+    const tagName = `Tag Produk Kurasi ${randomSuffix()}`;
+
+    const ditolak = await adminRequest(app, {
+      method: 'POST',
+      url: '/v1/admin/products',
+      token: contributor.token,
+      payload: productPayload({ tags: [tagName] }),
+    });
+    expect(ditolak.statusCode).toBe(403);
+    expect(errorBody(ditolak).details).toMatchObject({
+      reason: 'TAG_NOT_FOUND',
+      unknownTags: [tagName],
+    });
+
+    // Setelah Editor membuatnya, Contributor bisa memakainya.
+    const olehEditor = await createViaApi(editor.token, { tags: [tagName] });
+    const slug = olehEditor.tags[0]?.slug ?? '';
+    expect(slug).not.toBe('');
+
+    const diterima = await adminRequest(app, {
+      method: 'POST',
+      url: '/v1/admin/products',
+      token: contributor.token,
+      payload: productPayload({ tags: [tagName] }),
+    });
+    expect(diterima.statusCode).toBe(201);
+    ids.productIds.push(dataOf(diterima).id);
+    expect(dataOf(diterima).tags.map((tag) => tag.slug)).toEqual([slug]);
+  });
+
   test('dua material primer ditolak 400 (bentuk yang tidak pernah sah)', async () => {
     const res = await adminRequest(app, {
       method: 'POST',

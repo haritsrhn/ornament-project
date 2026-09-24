@@ -496,7 +496,18 @@ export type ProductBusinessRule =
   (typeof PRODUCT_BUSINESS_RULES)[keyof typeof PRODUCT_BUSINESS_RULES];
 
 /** `details.reason` pada `403 FORBIDDEN` kepemilikan/status (kontrak §2.4). */
-export const FORBIDDEN_REASONS = { NOT_OWNER: 'NOT_OWNER', NOT_DRAFT: 'NOT_DRAFT' } as const;
+export const FORBIDDEN_REASONS = {
+  NOT_OWNER: 'NOT_OWNER',
+  NOT_DRAFT: 'NOT_DRAFT',
+  /**
+   * Tag baru hanya boleh dibuat peran ber-`taxonomy.write` (kontrak §3.1):
+   * tabel `Tag` dipakai bersama produk dan artikel, jadi menambah baris di
+   * situ adalah menulis taksonomi, bukan menulis draf sendiri.
+   * `details.unknownTags` menyebut nama yang belum ada agar UI bisa memintanya
+   * ke Editor alih-alih hanya menolak.
+   */
+  TAG_NOT_FOUND: 'TAG_NOT_FOUND',
+} as const;
 export type ForbiddenReason = (typeof FORBIDDEN_REASONS)[keyof typeof FORBIDDEN_REASONS];
 
 // ── Status stok turunan (model §6.3, Q13) ────────────────────────────────────
