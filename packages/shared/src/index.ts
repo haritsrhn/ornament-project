@@ -18,5 +18,6 @@ export * from './inquiries.js';
 export * from './media.js';
 export * from './pagination.js';
 export * from './products.js';
+export * from './rich-text.js';
 export * from './site.js';
 export * from './users.js';

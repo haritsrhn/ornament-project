@@ -1,6 +1,7 @@
 import { z } from 'zod';
 
-import { publicMediaSchema, publicMediaWithCaptionSchema, richTextSchema } from './common.js';
+import { publicMediaSchema, publicMediaWithCaptionSchema } from './common.js';
+import { richTextSchema } from './rich-text.js';
 import { dataEnvelope, dataMetaEnvelope } from './envelope.js';
 import { publicArtisanStatusSchema } from './enums.js';
 import {

@@ -35,19 +35,6 @@ export type PublicMediaWithCaption = z.infer<typeof publicMediaWithCaptionSchema
 export const slugRefSchema = z.object({ slug: z.string(), name: z.string() });
 export type SlugRef = z.infer<typeof slugRefSchema>;
 
-/**
- * Rich text (model domain D7): JSON blok yang disimpan apa adanya di kolom
- * `Json` (`Product.description`, `Artisan.story`).
- *
- * Isi **artikel** tidak lagi memakai skema ini: `Article.content` punya skema
- * blok ketat `articleContentSchema` (`articles.ts`) sesuai model §3.6. Yang
- * tersisa di sini hanyalah dua kolom rich text yang bentuk bloknya belum
- * ditetapkan kontrak (`Product.description`, `Artisan.story`), sehingga di
- * situ kontrak masih hanya menjamin "JSON valid".
- */
-export const richTextSchema = z.json();
-export type RichText = z.infer<typeof richTextSchema>;
-
 // ── Submit publik (kontrak §5.3/§5.4, §1.8) ──────────────────────────────────
 
 /**
