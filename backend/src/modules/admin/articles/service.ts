@@ -12,9 +12,11 @@ import {
   countArticleWords,
   ARTICLE_BUSINESS_RULES,
   PUBLISH_REQUIREMENT_CODES,
+  roleHasPermission,
   type ArticleBlock,
   type ArticleInput,
   type UpdateArticleBody,
+  type UserRole,
 } from '@ornament/shared';
 
 import { Prisma } from '../../../generated/prisma/client.js';
@@ -32,6 +34,8 @@ export type Tx = Prisma.TransactionClient;
 export interface Actor {
   id: string;
   name: string;
+  /** Dibutuhkan untuk memutuskan boleh-tidaknya membuat tag baru (§3.1). */
+  role: UserRole;
 }
 
 // ── Validasi referensi (kontrak §5.9: `422 BUSINESS_RULE_VIOLATION`) ─────────
@@ -241,9 +245,16 @@ function contentData(content: ArticleBlock[] | undefined): {
   };
 }
 
-async function syncTags(tx: Tx, articleId: string, tags: string[] | undefined): Promise<void> {
+async function syncTags(
+  tx: Tx,
+  articleId: string,
+  actor: Actor,
+  tags: string[] | undefined,
+): Promise<void> {
   if (tags === undefined) return;
-  const tagIds = await resolveTagIds(tx, tags);
+  const tagIds = await resolveTagIds(tx, tags, {
+    canCreate: roleHasPermission(actor.role, 'taxonomy.write'),
+  });
   await tx.articleTag.deleteMany({ where: { articleId } });
   if (tagIds.length === 0) return;
   await tx.articleTag.createMany({ data: tagIds.map((tagId) => ({ articleId, tagId })) });
@@ -296,7 +307,7 @@ export async function createArticle(
         },
         select: { id: true },
       });
-      await syncTags(tx, created.id, input.tags);
+      await syncTags(tx, created.id, actor, input.tags);
       // Slug baru mungkin tercatat sebagai redirect lama milik artikel lain:
       // slug aktif selalu menang (§6.10).
       await releaseSlugRedirect(tx, 'ARTICLE', slug);
@@ -384,7 +395,7 @@ export async function updateArticle(
       if (nextSlug !== current.slug) {
         await recordSlugRedirect(tx, 'ARTICLE', articleId, current.slug, nextSlug);
       }
-      await syncTags(tx, articleId, input.tags);
+      await syncTags(tx, articleId, actor, input.tags);
 
       // Artikel yang sedang tayang (atau sudah dijadwalkan) tidak boleh
       // diturunkan menjadi tidak layak tayang lewat pintu belakang `PATCH`

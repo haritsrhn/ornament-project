@@ -771,4 +771,54 @@ describe('tag artikel', () => {
     expect(second.tags[0]?.id).toBe(first.tags[0]?.id);
     expect(await prisma.tag.count({ where: { slug } })).toBe(1);
   });
+
+  test('Contributor tidak bisa menambah tag baru ke taksonomi bersama', async () => {
+    // Tabel `Tag` dipakai bersama produk dan artikel, jadi menambah baris di
+    // situ adalah menulis taksonomi (§3.1 `taxonomy.write`, Editor+) — bukan
+    // menulis draf sendiri.
+    const res = await adminRequest(app, {
+      method: 'POST',
+      url: '/v1/admin/articles',
+      token: contributor.token,
+      payload: {
+        title: `Tag Baru CTR ${s}`,
+        content: [paragraphBlock('b1', 'Isi draf.')],
+        tags: [`Tag Liar ${s}`, `Tag Liar Kedua ${s}`],
+      },
+    });
+
+    expect(res.statusCode).toBe(403);
+    expect(errorBody(res).details).toMatchObject({ reason: 'TAG_NOT_FOUND' });
+    // Ketiganya dilaporkan sekaligus, bukan satu per satu tiap kali simpan.
+    expect(errorBody(res).details).toMatchObject({
+      unknownTags: [`Tag Liar ${s}`, `Tag Liar Kedua ${s}`],
+    });
+    expect(await prisma.tag.count({ where: { slug: { contains: 'tag-liar' } } })).toBe(0);
+  });
+
+  test('Contributor tetap bisa memakai tag yang sudah ada', async () => {
+    const tagName = `Tag Kurasi ${s}`;
+    const slug = `tag-kurasi-${s}`;
+    createdTagSlugs.push(slug);
+
+    // Editor membuatnya lebih dulu — persis alur autocomplete GET /admin/tags.
+    await createViaApi(editor.token, publishableBody(`tag-kurasi-${s}`, { tags: [tagName] }));
+
+    const res = await adminRequest(app, {
+      method: 'POST',
+      url: '/v1/admin/articles',
+      token: contributor.token,
+      payload: {
+        title: `Pakai Tag Kurasi ${s}`,
+        content: [paragraphBlock('b1', 'Isi draf.')],
+        // Ejaan berbeda tetap menemukan tag yang sama: pencocokan lewat slug.
+        tags: [tagName.toUpperCase()],
+      },
+    });
+
+    expect(res.statusCode).toBe(201);
+    ids.articleIds.push(articleOf(res).id);
+    expect(articleOf(res).tags.map((tag) => tag.slug)).toEqual([slug]);
+    expect(await prisma.tag.count({ where: { slug } })).toBe(1);
+  });
 });
