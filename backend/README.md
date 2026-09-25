@@ -84,6 +84,9 @@ src/
   modules/admin/media/dto.ts         DTO AdminMedia (url null untuk PRIVATE)
   modules/admin/media/service.ts     unggah, daftar, Trash/pulih/purge (kontrak §5.12)
   modules/admin/media/routes.ts      rute /v1/admin/media/* (kontrak §5.12)
+  modules/admin/comments/dto.ts      DTO AdminComment (ipHash/userAgent tidak pernah ikut)
+  modules/admin/comments/service.ts  moderasi, balasan admin (A7), anonimisasi (§6.11)
+  modules/admin/comments/routes.ts   rute /v1/admin/comments/* (kontrak §5.10)
   modules/admin/bulk.ts              pengumpul hasil aksi massal (sukses parsial, §5)
   modules/jobs/publish-scheduled.ts  job 60 detik SCHEDULED → PUBLISHED (ADR K8, model §6.6)
   modules/email/sender.ts        antarmuka EmailSender + NoopEmailSender (Resend ditunda, ADR K4)
@@ -1423,6 +1426,48 @@ tidak perlu mengulang aturan "sudah jatuh tempo" di setiap tempat.
 Endpoint cron eksternal `POST /v1/internal/jobs/publish-scheduled` (kontrak
 §5.17) **belum** ada; seluruh `/v1/internal/*` menyusul bersama modul job
 eksternal.
+
+## Moderasi komentar (`/v1/admin/comments/*`)
+
+Kontrak §5.10, model §6.8 & §6.11.
+
+**Contributor tidak punya akses sama sekali** (A2) — termasuk membaca daftar,
+karena isinya email pengunjung. Ini satu-satunya modul admin yang rute bacanya
+pun digantung pada izin (`comment.moderate`), bukan `adminSession()`.
+
+`ipHash` dan `userAgent` **tidak pernah** masuk DTO, bahkan untuk
+Administrator. Keduanya dikumpulkan untuk anti-spam otomatis, bukan untuk
+dibaca manusia, dan dikosongkan setelah 30 hari (§6.11). `authorEmail` justru
+ikut: moderator memakainya untuk menilai spam.
+
+| Aturan               | Perilaku                                                                                      |
+| -------------------- | --------------------------------------------------------------------------------------------- |
+| `DELETED`            | Titik akhir: `409 INVALID_STATE` untuk perubahan apa pun sesudahnya                           |
+| `SPAM`               | Masih bisa kembali ke `APPROVED` (§6.8)                                                       |
+| Balasan admin        | Langsung `APPROVED`; induk yang masih `PENDING` ikut disetujui dalam transaksi yang sama (A7) |
+| Balasan atas balasan | `422 REPLY_DEPTH_EXCEEDED` — utas publik satu tingkat                                         |
+| Artikel belum terbit | `422 ARTICLE_NOT_PUBLISHED`                                                                   |
+
+### Anonimisasi (§6.11)
+
+Administrator saja (A3), karena tidak bisa dibatalkan. Idempoten: setiap field
+ditulis ke nilai tetap, jadi menjalankannya dua kali menghasilkan keadaan yang
+sama.
+
+Komentar `APPROVED` mempertahankan `body` — utas publik tetap utuh — sedangkan
+yang tidak tayang kehilangan isinya juga, karena isi itu tidak pernah dibaca
+publik dan menyimpannya hanya menahan data yang diminta hilang.
+
+`ActivityLog` dengan `entityType`/`entityId` yang sama ikut diganti pesan
+generik. Tanpa langkah itu anonimisasi hanya memindahkan nama dan kutipan isi
+ke tabel lain.
+
+`sameEmail: true` menyapu seluruh komentar **dan** inquiry dengan email yang
+sama (hak GDPR untuk dihapus): satu orang yang meminta datanya hilang tidak
+seharusnya perlu mengajukannya dua kali untuk dua modul. Lampiran inquiry ikut
+dihapus beserta Media dan objek R2-nya — objek dihapus **setelah** transaksi
+commit, karena gagal menghapus berkas hanya menyisakan objek yatim sedangkan
+membatalkan anonimisasi yang sudah tercatat akan mengembalikan data pribadi.
 
 ## Media Library (`/v1/admin/media/*`)
 
