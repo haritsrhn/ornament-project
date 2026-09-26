@@ -8,6 +8,7 @@ import { createR2Client, type R2 } from './lib/r2.js';
 import { NoopEmailSender, type EmailSender } from './modules/email/sender.js';
 import { adminArticlesRoutes } from './modules/admin/articles/routes.js';
 import { adminArtisansRoutes } from './modules/admin/artisans/routes.js';
+import { adminCommentsRoutes } from './modules/admin/comments/routes.js';
 import { adminMediaRoutes } from './modules/admin/media/routes.js';
 import { adminProductsRoutes } from './modules/admin/products/routes.js';
 import { adminTaxonomyRoutes } from './modules/admin/taxonomy/routes.js';
@@ -213,6 +214,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       ? {}
       : { uploadSecret: options.uploadSecret ?? config?.MEDIA_UPLOAD_SECRET }),
   });
+  void app.register(adminCommentsRoutes, { prefix: '/v1', r2 });
   void app.register(adminTaxonomyRoutes, { prefix: '/v1' });
   void app.register(invitesRoutes, {
     prefix: '/v1',

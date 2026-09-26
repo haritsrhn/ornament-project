@@ -3,6 +3,7 @@
  * Hanya kontrak: tanpa dependensi server, tanpa tipe Prisma.
  */
 export * from './admin-articles.js';
+export * from './admin-comments.js';
 export * from './admin-artisans.js';
 export * from './admin-products.js';
 export * from './admin-taxonomy.js';

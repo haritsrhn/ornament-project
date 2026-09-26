@@ -75,6 +75,15 @@ export const ARTISAN_DOCUMENT_KINDS = [
 export const artisanDocumentKindSchema = z.enum(ARTISAN_DOCUMENT_KINDS);
 export type ArtisanDocumentKind = z.infer<typeof artisanDocumentKindSchema>;
 
+/**
+ * Status moderasi komentar (model §6.8). `DELETED` adalah soft delete: tidak
+ * tampil di tab mana pun dan tidak bisa dipulihkan lewat UI, sedangkan `SPAM`
+ * masih bisa dikembalikan ke `APPROVED`.
+ */
+export const COMMENT_STATUSES = ['PENDING', 'APPROVED', 'SPAM', 'DELETED'] as const;
+export const commentStatusSchema = z.enum(COMMENT_STATUSES);
+export type CommentStatus = z.infer<typeof commentStatusSchema>;
+
 export const ARTICLE_STATUSES = ['DRAFT', 'SCHEDULED', 'PUBLISHED'] as const;
 export const articleStatusSchema = z.enum(ARTICLE_STATUSES);
 export type ArticleStatus = z.infer<typeof articleStatusSchema>;
