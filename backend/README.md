@@ -84,12 +84,17 @@ src/
   modules/admin/media/dto.ts         DTO AdminMedia (url null untuk PRIVATE)
   modules/admin/media/service.ts     unggah, daftar, Trash/pulih/purge (kontrak §5.12)
   modules/admin/media/routes.ts      rute /v1/admin/media/* (kontrak §5.12)
+  modules/admin/anonymize.ts         anonimisasi bersama komentar + inquiry (§6.11)
   modules/admin/comments/dto.ts      DTO AdminComment (ipHash/userAgent tidak pernah ikut)
   modules/admin/comments/service.ts  moderasi, balasan admin (A7), anonimisasi (§6.11)
   modules/admin/comments/routes.ts   rute /v1/admin/comments/* (kontrak §5.10)
+  modules/admin/inquiries/dto.ts     DTO inbox: preview di daftar, message penuh di detail
+  modules/admin/inquiries/service.ts status §6.5, balasan DRAFT→SENT/FAILED, anonimisasi
+  modules/admin/inquiries/routes.ts  rute /v1/admin/inquiries/* (kontrak §5.11)
+  modules/email/resend.ts            pengirim Resend (ADR K4); gagal ≠ 5xx
   modules/admin/bulk.ts              pengumpul hasil aksi massal (sukses parsial, §5)
   modules/jobs/publish-scheduled.ts  job 60 detik SCHEDULED → PUBLISHED (ADR K8, model §6.6)
-  modules/email/sender.ts        antarmuka EmailSender + NoopEmailSender (Resend ditunda, ADR K4)
+  modules/email/sender.ts        antarmuka EmailSender + NoopEmailSender (ADR K4)
   plugins/prisma.ts    registerPrisma() — decorate app.prisma + $disconnect saat onClose
   plugins/validation.ts  validator/serializer Zod, locale pesan Indonesia, hanya body JSON
   plugins/error-handler.ts  setErrorHandler + setNotFoundHandler → envelope error kontrak §1.5
@@ -272,7 +277,7 @@ dicetak). `dev` dan `start` memuat `backend/.env` bila ada
 | `SITE_URL`, `REVALIDATE_SECRET`                                                           | —             | Opsional; revalidasi Next (kontrak §6)                                                                                                             |
 | `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_BUCKET`, `R2_PUBLIC_URL` | —             | Media (ADR K3); tanpa kelimanya unggah menjawab `503`                                                                                              |
 | `MEDIA_UPLOAD_SECRET`                                                                     | —             | Kunci HMAC `uploadId` (kontrak §5.12); min. 32 karakter di production                                                                              |
-| `RESEND_API_KEY`, `RESEND_FROM`                                                           | —             | Opsional; email (ADR K4). **Belum dibaca kode mana pun**: modul Resend ditunda ke Tahap 8 (lihat "Email" di bawah)                                 |
+| `RESEND_API_KEY`, `RESEND_FROM`                                                           | —             | Email (ADR K4). Tanpa keduanya, pengiriman jatuh ke `NoopEmailSender` dan status kirim tercatat `EMAIL_NOT_CONFIGURED`                             |
 
 Di `NODE_ENV=production`, `INTERNAL_API_KEY`, `INTERNAL_JOB_TOKEN`, dan
 `REVALIDATE_SECRET` (bila di-set) minimal 32 karakter.
@@ -1070,20 +1075,16 @@ akar; balasan bersarang (maks 1 tingkat, §3.6) hanya dibuat admin di Tahap 6.
 Kontrak §5.3 memang tidak mencantumkan `parentId` pada body publik, jadi
 mengirimnya ditolak `400` dengan `code: "unrecognized_keys"`.
 
-### Email: ditunda ke Tahap 8
+### Email
 
-Keputusan pemilik: **modul Resend ditunda**, dan PR ini tidak menambah dependensi
-email. Yang ada adalah antarmuka `EmailSender` + `NoopEmailSender`
-(`modules/email/sender.ts`).
-
-Artinya notifikasi inquiry ke `SiteSetting.contactEmail` **belum benar-benar
-terkirim**. Yang sudah benar adalah tempat dan cara memanggilnya: setelah commit,
-dan hasilnya disimpan apa adanya di `Inquiry.notificationMessageId` /
-`notificationError` (`EMAIL_NOT_CONFIGURED`, atau `CONTACT_EMAIL_NOT_SET` bila
-baris `SiteSetting` belum ada). Kegagalan kirim **tidak pernah** menjadi 5xx dan
-tidak mengubah respons (ADR K4, kontrak §1.10) — inquiry tetap tersimpan dan
-admin melihat "belum terkirim" alih-alih dibuat mengira tim sudah diberi tahu.
-Menukar implementasinya nanti tidak menyentuh handler.
+Notifikasi inquiry ke `SiteSetting.contactEmail` dikirim lewat Resend sejak
+Tahap 8 (`modules/email/resend.ts`); tanpa `RESEND_*` ia jatuh ke
+`NoopEmailSender`. Hasilnya disimpan apa adanya di
+`Inquiry.notificationMessageId` / `notificationError` (`EMAIL_NOT_CONFIGURED`,
+atau `CONTACT_EMAIL_NOT_SET` bila baris `SiteSetting` belum ada). Kegagalan
+kirim **tidak pernah** menjadi 5xx dan tidak mengubah respons (ADR K4, kontrak
+§1.10) — inquiry tetap tersimpan dan admin melihat "belum terkirim" alih-alih
+dibuat mengira tim sudah diberi tahu.
 
 ### Lampiran: presign ditunda ke Tahap 7
 
@@ -1464,10 +1465,95 @@ ke tabel lain.
 
 `sameEmail: true` menyapu seluruh komentar **dan** inquiry dengan email yang
 sama (hak GDPR untuk dihapus): satu orang yang meminta datanya hilang tidak
-seharusnya perlu mengajukannya dua kali untuk dua modul. Lampiran inquiry ikut
-dihapus beserta Media dan objek R2-nya — objek dihapus **setelah** transaksi
-commit, karena gagal menghapus berkas hanya menyisakan objek yatim sedangkan
-membatalkan anonimisasi yang sudah tercatat akan mengembalikan data pribadi.
+seharusnya perlu mengajukannya dua kali untuk dua modul.
+
+Seluruh baris `InquiryAttachment` dihapus, tetapi yang ikut **dipurge** hanya
+berkas pembeli (`replyId === null`) yang sudah tidak dirujuk apa pun. Lampiran
+balasan adalah berkas pustaka yang dipilih staf — daftar harga, katalog — dan
+bisa menempel di banyak inquiry: menghapusnya berarti berkas kerja staf hilang
+permanen karena satu pembeli minta datanya dihapus, dan bila masih dirujuk
+inquiry lain, FK `Restrict` membatalkan seluruh transaksi sehingga inquiry itu
+tidak akan pernah bisa dianonimkan. "Masih dipakai" dihitung
+`collectMediaUsages` yang sama dengan Media Library.
+
+Objek R2 dihapus **setelah** transaksi commit: gagal menghapus berkas hanya
+menyisakan objek yatim, sedangkan membatalkan anonimisasi yang sudah tercatat
+akan mengembalikan data pribadi.
+
+## Inbox inquiry (`/v1/admin/inquiries/*`)
+
+Kontrak §5.11, model §3.7 & §6.5. Contributor tidak punya akses — inquiry
+adalah data pembeli (nama, email, anggaran), bukan konten.
+
+**`GET` tidak menandai dibaca.** Itu aksi tersendiri lewat `PATCH { read: true }`,
+supaya mengintip detail tidak sama dengan menerima pekerjaannya.
+
+Daftar memakai `preview` ±120 karakter, bukan `message` penuh: inbox memuat
+puluhan baris sekaligus dan isi lengkap permintaan pembeli tidak perlu ikut ke
+setiap muat halaman.
+
+### Transisi status (§6.5)
+
+| Dari → ke                      | Boleh?                                                                   |
+| ------------------------------ | ------------------------------------------------------------------------ |
+| `NEW` → `IN_PROGRESS` / `DONE` | ✓                                                                        |
+| `IN_PROGRESS` → `DONE`         | ✓                                                                        |
+| `IN_PROGRESS` → `NEW`          | ✗ — "belum dibaca" tidak bisa dibuat ulang                               |
+| `DONE` → apa pun               | ✗ lewat tombol; `IN_PROGRESS` hanya lewat balasan baru yang **terkirim** |
+
+`completedAt` diisi saat `DONE` dan dikosongkan saat inquiry terbuka kembali,
+supaya laporan tidak menghitung dua kali.
+
+### Balasan
+
+Disimpan `DRAFT` lebih dulu, dikirim **setelah commit** (§6.5). Email adalah
+panggilan jaringan ke pihak ketiga: menjalankannya di dalam transaksi menahan
+koneksi database selama Resend lambat, dan rollback-nya akan membuang balasan
+yang mungkin sudah terkirim.
+
+`toEmail` diambil saat balasan **dibuat**, bukan saat dikirim — inquiry yang
+dianonimkan di antara keduanya tidak boleh membangkitkan alamat yang sudah
+dihapus.
+
+Kegagalan email **tidak pernah** menjadi 5xx (§1.10): `200` dengan
+`status: FAILED` + `emailError`, dan bisa dikirim ulang. `SENT` tidak bisa
+diedit, dihapus, maupun dikirim ulang; `FAILED` boleh dihapus karena tidak
+pernah sampai ke siapa pun.
+
+Lampiran diunduh dari R2 dan ikut sebagai berkas di email, bukan sebagai
+tautan bertanda tangan: penerimanya pembeli di luar organisasi, dan URL
+berumur 5 menit akan mati sebelum sempat dibuka.
+
+`Idempotency-Key` disarankan pada `/send`: klik ganda tidak boleh mengirim dua
+email ke pembeli. Yang disimpan di `IdempotencyRecord` hanya id, bukan DTO
+jadi — tabel itu hidup 24 jam dan **tidak** ikut dianonimkan, jadi menyimpan
+respons utuh di sana berarti data pembeli bertahan sehari setelah ia minta
+dihapus. Responsnya dirender ulang dari database, baik pada panggilan pertama
+maupun pengulangan.
+
+Tanpa kunci pun pengiriman ganda tidak saling menimpa: hasil kirim ditulis
+dengan syarat `status != 'SENT'`, sehingga percobaan yang gagal belakangan
+tidak bisa mengubah balasan yang sudah sampai ke pembeli menjadi `FAILED` —
+yang akan membuatnya bisa diedit dan dikirim ulang.
+
+**Jendela yang masih terbuka:** bila proses mati tepat setelah Resend menerima
+pesan tetapi sebelum hasilnya tercatat, balasan tetap `DRAFT` sementara
+emailnya sudah sampai. Menutupnya butuh status `SENDING` di enum `ReplyStatus`
+(migrasi skema); untuk sekarang jendelanya dipersempit dengan menulis hasil
+kirim lebih dulu, terpisah dari pembaruan inquiry.
+
+Total ukuran lampiran satu balasan dibatasi 15 MB. Jumlah berkas saja tidak
+cukup: lima berkas privat berukuran maksimum berarti 50 MB yang diunduh ke
+memori lalu di-base64 oleh SDK email, dan pengiriman gagal boleh diulang tanpa
+batas.
+
+### Email (ADR K4)
+
+`RESEND_API_KEY` + `RESEND_FROM` lengkap → `ResendEmailSender`; salah satu
+kosong → `NoopEmailSender` yang melaporkan `EMAIL_NOT_CONFIGURED`. Satu
+instance dipakai undangan, notifikasi inquiry, dan balasan inquiry, supaya
+ketiganya melaporkan kegagalan dengan cara yang sama. SDK di-`import()` saat
+pertama dipakai, dengan alasan yang sama seperti SDK R2.
 
 ## Media Library (`/v1/admin/media/*`)
 

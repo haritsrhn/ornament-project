@@ -16,12 +16,15 @@ export interface FakeR2 extends R2 {
   /** Menaruh objek seolah klien sudah meng-`PUT`-nya. */
   put(key: string, object: { sizeBytes: number; mimeType?: string; body?: Buffer }): void;
   readonly removed: string[];
+  /** Membuat `readHead` berikutnya melempar, seperti R2 yang menjawab 5xx. */
+  failNextRead: (error: string) => void;
   readonly objects: Map<string, { sizeBytes: number; mimeType?: string; body?: Buffer }>;
 }
 
 export function createFakeR2(bucket = 'ornament-test'): FakeR2 {
   const objects = new Map<string, { sizeBytes: number; mimeType?: string; body?: Buffer }>();
   const removed: string[] = [];
+  let nextReadError: string | null = null;
 
   return {
     bucket,
@@ -30,6 +33,10 @@ export function createFakeR2(bucket = 'ornament-test'): FakeR2 {
 
     put(key, object) {
       objects.set(key, object);
+    },
+
+    failNextRead(error) {
+      nextReadError = error;
     },
 
     presignPut: ({ key, expiresInSeconds }) =>
@@ -55,6 +62,13 @@ export function createFakeR2(bucket = 'ornament-test'): FakeR2 {
     },
 
     readHead: (key, bytes) => {
+      if (nextReadError !== null) {
+        const error = nextReadError;
+        nextReadError = null;
+        // Bukan "tidak ditemukan": `readHead` sungguhan hanya mengubah 404
+        // menjadi `null` dan melempar sisanya.
+        return Promise.reject(new Error(error));
+      }
       const object = objects.get(key);
       return Promise.resolve(object?.body === undefined ? null : object.body.subarray(0, bytes));
     },
