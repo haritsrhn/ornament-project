@@ -18,6 +18,18 @@ export const INQUIRY_REPLY_SUBJECT_MAX = 200;
 export const INQUIRY_REPLY_BODY_MAX = 20_000;
 /** Lampiran balasan (kontrak §5.11); berkas pembeli dibatasi terpisah (A5). */
 export const INQUIRY_REPLY_ATTACHMENTS_MAX = 5;
+
+/**
+ * Batas **total** ukuran lampiran satu balasan.
+ *
+ * Jumlah berkas saja tidak cukup: lima berkas privat berukuran maksimum
+ * (10 MB, `MEDIA_UPLOAD_ALLOWLIST.PRIVATE`) berarti 50 MB yang harus diunduh
+ * dari R2 ke memori lalu di-base64 oleh SDK email — ratusan MB sesaat per
+ * pengiriman, dan pengiriman yang gagal boleh diulang tanpa batas. Angkanya
+ * juga di bawah batas lampiran Resend, sehingga kiriman yang lolos di sini
+ * tidak otomatis ditolak penyedia.
+ */
+export const INQUIRY_REPLY_ATTACHMENTS_TOTAL_BYTES = 15 * 1024 * 1024;
 /** Panjang cuplikan `message` di daftar. */
 export const INQUIRY_PREVIEW_LENGTH = 120;
 
@@ -168,6 +180,8 @@ export type SendInquiryReplyResult = z.infer<typeof sendInquiryReplyResultSchema
 export const INQUIRY_BUSINESS_RULES = {
   /** Lampiran balasan wajib Media `PRIVATE` (kontrak §5.11). */
   MEDIA_NOT_PRIVATE: 'MEDIA_NOT_PRIVATE',
+  /** Total ukuran lampiran melebihi `INQUIRY_REPLY_ATTACHMENTS_TOTAL_BYTES`. */
+  ATTACHMENTS_TOO_LARGE: 'ATTACHMENTS_TOO_LARGE',
 } as const;
 
 /**

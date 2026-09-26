@@ -39,7 +39,11 @@ export const adminInquiryRowSelect = {
   message: true,
   anonymizedAt: true,
   createdAt: true,
-  _count: { select: { attachments: true, replies: true } },
+  // `replyId: null` — hanya lampiran pembeli. `InquiryAttachment.inquiryId`
+  // terisi untuk lampiran balasan juga, jadi hitungan polos akan bertambah
+  // setiap kali staf membalas dan tidak lagi cocok dengan `attachments` di
+  // detail, yang kontrak §5.11 batasi pada berkas pembeli.
+  _count: { select: { attachments: { where: { replyId: null } }, replies: true } },
 } as const;
 
 export const adminInquirySelect = {

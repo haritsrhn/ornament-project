@@ -66,7 +66,15 @@ export class ResendEmailSender implements EmailSender {
    * termasuk seluruh test suite, yang memakai dobel — tidak perlu membayarnya.
    */
   #connect(): Promise<Resend> {
-    this.#client ??= import('resend').then((mod) => new mod.Resend(this.#config.apiKey));
+    // Promise yang ditolak tidak boleh ikut ter-cache: sekali gagal — misalnya
+    // dependensi setengah terpasang sesudah deploy — setiap email berikutnya
+    // akan melaporkan galat yang sama sampai proses di-restart.
+    this.#client ??= import('resend')
+      .then((mod) => new mod.Resend(this.#config.apiKey))
+      .catch((error: unknown) => {
+        this.#client = null;
+        throw error;
+      });
     return this.#client;
   }
 

@@ -14,6 +14,7 @@
 import { ANONYMIZED_COMMENT_AUTHOR } from '@ornament/shared';
 
 import { Prisma } from '../../generated/prisma/client.js';
+import { collectMediaUsages } from './media/usage.js';
 
 type Tx = Prisma.TransactionClient;
 
@@ -67,16 +68,36 @@ export async function anonymizeInquiryRows(
 
   const attachments = await tx.inquiryAttachment.findMany({
     where: { inquiryId: { in: [...ids] } },
-    select: { id: true, mediaId: true, media: { select: { key: true } } },
+    select: { id: true, mediaId: true, replyId: true, media: { select: { key: true } } },
   });
   if (attachments.length > 0) {
+    // Seluruh baris lampiran dihapus, pembeli maupun balasan (§6.11).
     await tx.inquiryAttachment.deleteMany({
       where: { id: { in: attachments.map((row) => row.id) } },
     });
-    // Lampiran dibuat pengunjung dan hanya berarti bagi inquiry itu, jadi
-    // Media-nya ikut hilang permanen — bukan sekadar masuk Trash.
-    await tx.media.deleteMany({ where: { id: { in: attachments.map((row) => row.mediaId) } } });
-    for (const row of attachments) purgedKeys.push(row.media.key);
+
+    /**
+     * Yang ikut **dipurge** hanyalah berkas pembeli (`replyId === null`), dan
+     * hanya bila tidak ada lagi yang merujuknya.
+     *
+     * Lampiran balasan bukan data pembeli: ia berkas pustaka yang dipilih staf
+     * — daftar harga, katalog — dan bisa menempel di banyak inquiry sekaligus.
+     * Menghapusnya berarti dua hal buruk: berkas kerja staf hilang permanen
+     * beserta objek R2-nya karena satu pembeli minta datanya dihapus, dan bila
+     * masih dirujuk inquiry lain, FK `Restrict` membatalkan seluruh transaksi
+     * sehingga inquiry itu **tidak akan pernah bisa** dianonimkan.
+     */
+    const candidates = attachments.filter((row) => row.replyId === null);
+    const orphans = await orphanMediaIds(
+      tx,
+      candidates.map((row) => row.mediaId),
+    );
+    if (orphans.size > 0) {
+      await tx.media.deleteMany({ where: { id: { in: [...orphans] } } });
+      for (const row of candidates) {
+        if (orphans.has(row.mediaId)) purgedKeys.push(row.media.key);
+      }
+    }
   }
 
   await tx.inquiryReply.updateMany({
@@ -121,4 +142,15 @@ export async function genericizeActivityLog(
     where: { entityType, entityId: { in: [...ids] } },
     data: { message, metadata: Prisma.DbNull },
   });
+}
+
+/**
+ * Media yang sudah tidak dirujuk apa pun, dihitung setelah baris lampiran
+ * dihapus. Dipakai `collectMediaUsages` yang sama dengan Media Library, supaya
+ * definisi "masih dipakai" tidak bercabang dua.
+ */
+async function orphanMediaIds(tx: Tx, mediaIds: readonly string[]): Promise<Set<string>> {
+  if (mediaIds.length === 0) return new Set();
+  const usages = await collectMediaUsages(tx, mediaIds);
+  return new Set(mediaIds.filter((id) => (usages.get(id)?.length ?? 0) === 0));
 }

@@ -1465,10 +1465,20 @@ ke tabel lain.
 
 `sameEmail: true` menyapu seluruh komentar **dan** inquiry dengan email yang
 sama (hak GDPR untuk dihapus): satu orang yang meminta datanya hilang tidak
-seharusnya perlu mengajukannya dua kali untuk dua modul. Lampiran inquiry ikut
-dihapus beserta Media dan objek R2-nya — objek dihapus **setelah** transaksi
-commit, karena gagal menghapus berkas hanya menyisakan objek yatim sedangkan
-membatalkan anonimisasi yang sudah tercatat akan mengembalikan data pribadi.
+seharusnya perlu mengajukannya dua kali untuk dua modul.
+
+Seluruh baris `InquiryAttachment` dihapus, tetapi yang ikut **dipurge** hanya
+berkas pembeli (`replyId === null`) yang sudah tidak dirujuk apa pun. Lampiran
+balasan adalah berkas pustaka yang dipilih staf — daftar harga, katalog — dan
+bisa menempel di banyak inquiry: menghapusnya berarti berkas kerja staf hilang
+permanen karena satu pembeli minta datanya dihapus, dan bila masih dirujuk
+inquiry lain, FK `Restrict` membatalkan seluruh transaksi sehingga inquiry itu
+tidak akan pernah bisa dianonimkan. "Masih dipakai" dihitung
+`collectMediaUsages` yang sama dengan Media Library.
+
+Objek R2 dihapus **setelah** transaksi commit: gagal menghapus berkas hanya
+menyisakan objek yatim, sedangkan membatalkan anonimisasi yang sudah tercatat
+akan mengembalikan data pribadi.
 
 ## Inbox inquiry (`/v1/admin/inquiries/*`)
 
@@ -1515,7 +1525,27 @@ tautan bertanda tangan: penerimanya pembeli di luar organisasi, dan URL
 berumur 5 menit akan mati sebelum sempat dibuka.
 
 `Idempotency-Key` disarankan pada `/send`: klik ganda tidak boleh mengirim dua
-email ke pembeli.
+email ke pembeli. Yang disimpan di `IdempotencyRecord` hanya id, bukan DTO
+jadi — tabel itu hidup 24 jam dan **tidak** ikut dianonimkan, jadi menyimpan
+respons utuh di sana berarti data pembeli bertahan sehari setelah ia minta
+dihapus. Responsnya dirender ulang dari database, baik pada panggilan pertama
+maupun pengulangan.
+
+Tanpa kunci pun pengiriman ganda tidak saling menimpa: hasil kirim ditulis
+dengan syarat `status != 'SENT'`, sehingga percobaan yang gagal belakangan
+tidak bisa mengubah balasan yang sudah sampai ke pembeli menjadi `FAILED` —
+yang akan membuatnya bisa diedit dan dikirim ulang.
+
+**Jendela yang masih terbuka:** bila proses mati tepat setelah Resend menerima
+pesan tetapi sebelum hasilnya tercatat, balasan tetap `DRAFT` sementara
+emailnya sudah sampai. Menutupnya butuh status `SENDING` di enum `ReplyStatus`
+(migrasi skema); untuk sekarang jendelanya dipersempit dengan menulis hasil
+kirim lebih dulu, terpisah dari pembaruan inquiry.
+
+Total ukuran lampiran satu balasan dibatasi 15 MB. Jumlah berkas saja tidak
+cukup: lima berkas privat berukuran maksimum berarti 50 MB yang diunduh ke
+memori lalu di-base64 oleh SDK email, dan pengiriman gagal boleh diulang tanpa
+batas.
 
 ### Email (ADR K4)
 

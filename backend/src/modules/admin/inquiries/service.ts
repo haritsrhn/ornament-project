@@ -18,6 +18,7 @@
 import {
   canTransitionInquiry,
   INQUIRY_BUSINESS_RULES,
+  INQUIRY_REPLY_ATTACHMENTS_TOTAL_BYTES,
   type AdminInquiriesQuery,
   type InquiryReplyInput,
   type InquiryStatus,
@@ -155,12 +156,16 @@ export async function updateInquiry(
         // `GET` sengaja tidak menandai dibaca (kontrak §5.11): membuka detail
         // untuk mengintip tidak sama dengan menerima pekerjaannya.
         ...(input.read === undefined ? {} : { readAt: input.read ? new Date() : null }),
-        ...(input.status === undefined
+        ...(input.status === undefined || input.status === current.status
           ? {}
           : {
               status: input.status,
               // `completedAt` adalah jejak kapan selesai; ia ikut dibersihkan
               // saat inquiry dibuka kembali supaya laporan tidak salah hitung.
+              //
+              // Hanya ditulis saat status benar-benar berubah: menandai
+              // "selesai" dua kali akan memundurkan tenggat anonimisasi
+              // otomatis 24 bulan (§6.11) tanpa jejak apa pun di log.
               completedAt: input.status === 'DONE' ? new Date() : null,
             }),
         ...(input.targetShipDate === undefined
@@ -296,6 +301,27 @@ export async function deleteReply(
   });
 }
 
+/**
+ * Membaca ulang balasan + barisnya dari database.
+ *
+ * Dipakai jalur idempotensi: simpanan `IdempotencyRecord` sengaja hanya berisi
+ * id, bukan DTO jadi, sehingga data pribadi pembeli tidak tersalin ke tabel
+ * ketiga yang tidak ikut dianonimkan (§6.11). Konsekuensinya pemutaran ulang
+ * harus merender dari keadaan sekarang — yang justru benar: balasan yang
+ * inquiry-nya sudah dianonimkan memang harus tampil kosong.
+ */
+export async function loadSendOutcome(
+  prisma: PrismaClient,
+  inquiryId: string,
+  replyId: string,
+): Promise<SendReplyOutcome> {
+  const [reply, inquiry] = await Promise.all([
+    prisma.inquiryReply.findUniqueOrThrow({ where: { id: replyId }, select: inquiryReplySelect }),
+    prisma.inquiry.findUniqueOrThrow({ where: { id: inquiryId }, select: adminInquiryRowSelect }),
+  ]);
+  return { reply, inquiry };
+}
+
 export interface SendReplyOutcome {
   reply: InquiryReplyRow;
   inquiry: AdminInquiryRowData;
@@ -343,18 +369,40 @@ export async function sendReply(
           attachments: await downloadAttachments(deps, prepared.reply),
         });
 
+  const sent = result.error === null;
+
+  /**
+   * Hasil kirim dicatat lebih dulu, sendirian, dan **hanya bila balasan belum
+   * `SENT`**.
+   *
+   * Dua alasan. Pertama, fase 1 tidak mengunci apa pun, jadi dua pengiriman
+   * yang tumpang tindih sama-sama lolos penjaga `SENT`; tanpa syarat di sini,
+   * yang gagal belakangan akan menimpa yang sudah berhasil menjadi `FAILED` —
+   * dan balasan yang sudah sampai ke pembeli kembali bisa diedit, dihapus,
+   * serta dikirim ulang. Kedua, menulisnya terpisah dari pembaruan inquiry
+   * membuat jendela "email terkirim tapi tidak tercatat" sesempit mungkin:
+   * percobaan berikutnya melihat `SENT` dan berhenti di fase 1.
+   */
+  const claimed = await deps.prisma.inquiryReply.updateMany({
+    where: { id: replyId, status: { not: 'SENT' } },
+    data: {
+      status: sent ? 'SENT' : 'FAILED',
+      sentAt: result.sentAt,
+      emailMessageId: result.messageId,
+      emailError: result.error,
+    },
+  });
+
   return deps.prisma.$transaction(async (tx) => {
-    const sent = result.error === null;
-    await tx.inquiryReply.update({
-      where: { id: replyId },
-      data: {
-        status: sent ? 'SENT' : 'FAILED',
-        sentAt: result.sentAt,
-        emailMessageId: result.messageId,
-        emailError: result.error,
-      },
-      select: { id: true },
-    });
+    // Kalah lomba: proses lain sudah menandai `SENT`. Keadaannya dikembalikan
+    // apa adanya alih-alih ditimpa.
+    if (claimed.count === 0) {
+      const [reply, inquiry] = await Promise.all([
+        tx.inquiryReply.findUniqueOrThrow({ where: { id: replyId }, select: inquiryReplySelect }),
+        tx.inquiry.findUniqueOrThrow({ where: { id: inquiryId }, select: adminInquiryRowSelect }),
+      ]);
+      return { reply, inquiry };
+    }
 
     // Balasan pertama yang benar-benar terkirim memindahkan inquiry ke
     // `IN_PROGRESS`, termasuk membuka kembali yang sudah `DONE` (§6.5).
@@ -398,12 +446,29 @@ async function downloadAttachments(
   });
 
   const files: { fileName: string; content: Buffer }[] = [];
+  let budget = INQUIRY_REPLY_ATTACHMENTS_TOTAL_BYTES;
   for (const media of keys) {
+    const size = Number(media.sizeBytes);
+    // Lapis kedua: ukuran berkas bisa berubah di antara simpan dan kirim, dan
+    // yang menahan memori proses adalah unduhan ini, bukan validasi tadi.
+    if (size > budget) continue;
+    budget -= size;
+    // `Range: bytes=0--1` ditolak S3; berkas kosong tidak ada isinya untuk
+    // dilampirkan, jadi ia dilewati sebelum menyentuh jaringan.
+    if (size <= 0) continue;
+
     // Gagal mengunduh satu lampiran tidak membatalkan kiriman: balasan tanpa
-    // lampiran lebih berguna daripada tidak ada balasan sama sekali, dan
-    // statusnya tetap terlihat di UI lewat daftar lampiran balasan.
-    const content = await deps.r2.readHead(media.key, Number(media.sizeBytes));
-    if (content !== null) files.push({ fileName: media.fileName, content });
+    // lampiran lebih berguna daripada tidak ada balasan sama sekali. `readHead`
+    // hanya mengubah "tidak ditemukan" menjadi `null` — 5xx dari R2, kredensial
+    // kedaluwarsa, dan timeout tetap dilempar, dan tanpa tangkapan di sini
+    // seluruh `/send` menjadi `500` alih-alih `200` dengan `emailError`
+    // (kontrak §5.11, §1.10).
+    try {
+      const content = await deps.r2.readHead(media.key, size);
+      if (content !== null) files.push({ fileName: media.fileName, content });
+    } catch {
+      continue;
+    }
   }
   return files;
 }
@@ -433,7 +498,7 @@ async function assertPrivateMedia(tx: Tx, mediaIds: readonly string[]): Promise<
   if (mediaIds.length === 0) return;
   const rows = await tx.media.findMany({
     where: { id: { in: [...mediaIds] } },
-    select: { id: true, visibility: true, deletedAt: true },
+    select: { id: true, visibility: true, deletedAt: true, sizeBytes: true },
   });
   if (rows.length !== new Set(mediaIds).size) throw notFound('Media tidak ditemukan.');
 
@@ -442,6 +507,16 @@ async function assertPrivateMedia(tx: Tx, mediaIds: readonly string[]): Promise<
     throw businessRuleViolation(
       INQUIRY_BUSINESS_RULES.MEDIA_NOT_PRIVATE,
       'Lampiran balasan harus berkas privat yang masih aktif.',
+    );
+  }
+
+  // Ditolak saat disimpan, bukan saat dikirim: balasan yang lampirannya tidak
+  // mungkin terkirim lebih baik tidak pernah menjadi draf.
+  const total = rows.reduce((sum, row) => sum + Number(row.sizeBytes), 0);
+  if (total > INQUIRY_REPLY_ATTACHMENTS_TOTAL_BYTES) {
+    throw businessRuleViolation(
+      INQUIRY_BUSINESS_RULES.ATTACHMENTS_TOO_LARGE,
+      'Total ukuran lampiran melebihi batas yang diizinkan.',
     );
   }
 }

@@ -343,6 +343,36 @@ describe('balasan', () => {
     expect(errorBody(res).details).toMatchObject({ rule: 'MEDIA_NOT_PRIVATE' });
   });
 
+  test('total lampiran yang terlalu besar ditolak saat disimpan, bukan saat dikirim', async () => {
+    const id = await createInquiry();
+    const besar: string[] = [];
+    for (const label of ['besar-a', 'besar-b']) {
+      const row = await prisma.media.create({
+        data: {
+          key: `private/media/2026/09/${label}-${s}.pdf`,
+          visibility: 'PRIVATE',
+          kind: 'DOCUMENT',
+          fileName: `${label}.pdf`,
+          mimeType: 'application/pdf',
+          sizeBytes: BigInt(9 * 1024 * 1024),
+        },
+        select: { id: true },
+      });
+      mediaIds.push(row.id);
+      besar.push(row.id);
+    }
+
+    const res = await adminRequest(app, {
+      method: 'POST',
+      url: `/v1/admin/inquiries/${id}/replies`,
+      token: editor.token,
+      payload: { body: 'Terlampir.', attachmentMediaIds: besar },
+    });
+    // 18 MB: jumlah berkasnya sah (2 ≤ 5), totalnya yang tidak.
+    expect(res.statusCode).toBe(422);
+    expect(errorBody(res).details).toMatchObject({ rule: 'ATTACHMENTS_TOO_LARGE' });
+  });
+
   test('kirim sukses: SENT, lampiran ikut, dan inquiry menjadi IN_PROGRESS', async () => {
     const id = await createInquiry({ status: 'NEW' });
     const mediaId = await createPrivateMedia('penawaran');
@@ -529,6 +559,128 @@ describe('balasan', () => {
   });
 });
 
+describe('kekokohan pengiriman', () => {
+  test('attachmentCount hanya menghitung lampiran pembeli, bukan lampiran balasan', async () => {
+    const id = await createInquiry();
+    const pembeli = await createPrivateMedia('dari-pembeli');
+    await prisma.inquiryAttachment.create({
+      data: { inquiryId: id, mediaId: pembeli },
+      select: { id: true },
+    });
+
+    const balasan = await createPrivateMedia('dari-staf');
+    await adminRequest(app, {
+      method: 'POST',
+      url: `/v1/admin/inquiries/${id}/replies`,
+      token: editor.token,
+      payload: { body: 'Penawaran.', attachmentMediaIds: [balasan] },
+    });
+
+    const detail = await adminRequest(app, {
+      method: 'GET',
+      url: `/v1/admin/inquiries/${id}`,
+      token: editor.token,
+    });
+    expect(inquiryOf(detail).attachments).toHaveLength(1);
+
+    const list = await adminRequest(app, {
+      method: 'GET',
+      url: `/v1/admin/inquiries?q=${encodeURIComponent(s)}&pageSize=100`,
+      token: editor.token,
+    });
+    const row = rowsOf(list).find((item) => item.id === id);
+    // Badan klip di inbox harus sama dengan jumlah lampiran di detail; tanpa
+    // filter `replyId: null` ia bertambah setiap kali staf membalas.
+    expect(row?.attachmentCount).toBe(1);
+  });
+
+  test('R2 yang gagal dibaca tidak membuat /send menjadi 500', async () => {
+    const id = await createInquiry();
+    const mediaId = await createPrivateMedia('gagal-dibaca');
+    const created = await adminRequest(app, {
+      method: 'POST',
+      url: `/v1/admin/inquiries/${id}/replies`,
+      token: editor.token,
+      payload: { body: 'Terlampir.', attachmentMediaIds: [mediaId] },
+    });
+
+    r2.failNextRead('R2 503: service unavailable');
+    const res = await adminRequest(app, {
+      method: 'POST',
+      url: `/v1/admin/inquiries/${id}/replies/${replyOf(created).id}/send`,
+      token: editor.token,
+    });
+
+    // Balasan tanpa lampiran lebih berguna daripada 500 tanpa jejak apa pun.
+    expect(res.statusCode).toBe(200);
+    expect(sendOf(res).reply.status).toBe('SENT');
+    expect(email.replies.at(-1)?.attachments ?? []).toHaveLength(0);
+  });
+
+  test('pengiriman bersamaan: yang gagal tidak menimpa yang sudah SENT', async () => {
+    const id = await createInquiry();
+    const created = await adminRequest(app, {
+      method: 'POST',
+      url: `/v1/admin/inquiries/${id}/replies`,
+      token: editor.token,
+      payload: { body: 'Sekali kirim.' },
+    });
+    const replyId = replyOf(created).id;
+    const url = `/v1/admin/inquiries/${id}/replies/${replyId}/send`;
+
+    // Satu dari dua panggilan gagal di sisi penyedia. Tanpa syarat
+    // `status != SENT` di penulisan hasil, yang gagal belakangan akan
+    // mengubah balasan yang sudah sampai ke pembeli menjadi FAILED — dan
+    // balasan itu kembali bisa diedit, dihapus, serta dikirim ulang.
+    email.failNextReply('Resend 429: rate limited');
+    await Promise.all([
+      adminRequest(app, { method: 'POST', url, token: editor.token }),
+      adminRequest(app, { method: 'POST', url, token: editor.token }),
+    ]);
+
+    const stored = await prisma.inquiryReply.findUniqueOrThrow({
+      where: { id: replyId },
+      select: { status: true, sentAt: true },
+    });
+    expect(stored.status).toBe('SENT');
+    expect(stored.sentAt).not.toBeNull();
+
+    // Dan karenanya tetap terkunci.
+    const edit = await adminRequest(app, {
+      method: 'PATCH',
+      url: `/v1/admin/inquiries/${id}/replies/${replyId}`,
+      token: editor.token,
+      payload: { body: 'Diubah.' },
+    });
+    expect(edit.statusCode).toBe(409);
+  });
+
+  test('menandai DONE dua kali tidak memundurkan completedAt (§6.11)', async () => {
+    const id = await createInquiry({ status: 'IN_PROGRESS' });
+    const payload = { status: 'DONE' };
+
+    const pertama = await adminRequest(app, {
+      method: 'PATCH',
+      url: `/v1/admin/inquiries/${id}`,
+      token: editor.token,
+      payload,
+    });
+    const completedAt = inquiryOf(pertama).completedAt;
+    expect(completedAt).not.toBeNull();
+
+    const kedua = await adminRequest(app, {
+      method: 'PATCH',
+      url: `/v1/admin/inquiries/${id}`,
+      token: editor.token,
+      payload,
+    });
+    // Tenggat anonimisasi otomatis 24 bulan dihitung dari `completedAt`;
+    // menekan "Tandai selesai" lagi tidak boleh memundurkannya diam-diam.
+    expect(kedua.statusCode).toBe(200);
+    expect(inquiryOf(kedua).completedAt).toBe(completedAt);
+  });
+});
+
 describe('anonimisasi', () => {
   test('Editor ditolak; Administrator mengosongkan data pribadi dan balasannya', async () => {
     const id = await createInquiry();
@@ -617,6 +769,73 @@ describe('anonimisasi', () => {
     expect(await prisma.inquiryAttachment.count({ where: { inquiryId: id } })).toBe(0);
     expect(await prisma.media.findUnique({ where: { id: mediaId } })).toBeNull();
     expect(r2.removed).toContain(media.key);
+  });
+
+  test('lampiran balasan tidak ikut dipurge: berkas pustaka staf bukan data pembeli', async () => {
+    const pertama = await createInquiry();
+    const kedua = await createInquiry();
+    const bersama = await createPrivateMedia('daftar-harga');
+
+    // Satu berkas pustaka dipakai membalas dua inquiry berbeda.
+    for (const id of [pertama, kedua]) {
+      await adminRequest(app, {
+        method: 'POST',
+        url: `/v1/admin/inquiries/${id}/replies`,
+        token: editor.token,
+        payload: { body: 'Terlampir daftar harga.', attachmentMediaIds: [bersama] },
+      });
+    }
+
+    const res = await adminRequest(app, {
+      method: 'POST',
+      url: `/v1/admin/inquiries/${pertama}/anonymize`,
+      token: admin.token,
+      payload: {},
+    });
+
+    // Tanpa penyaringan `replyId: null`, FK `Restrict` dari lampiran inquiry
+    // kedua membatalkan transaksi dan inquiry ini tidak akan pernah bisa
+    // dianonimkan.
+    expect(res.statusCode).toBe(200);
+    // Berkas staf tetap ada, dan balasan inquiry kedua masih menunjuknya.
+    expect(await prisma.media.findUnique({ where: { id: bersama } })).not.toBeNull();
+    expect(await prisma.inquiryAttachment.count({ where: { inquiryId: kedua } })).toBe(1);
+  });
+
+  test('pemutaran ulang idempotensi tidak membangkitkan data yang sudah dianonimkan', async () => {
+    const id = await createInquiry();
+    const created = await adminRequest(app, {
+      method: 'POST',
+      url: `/v1/admin/inquiries/${id}/replies`,
+      token: editor.token,
+      payload: { body: 'Penawaran kami terlampir.' },
+    });
+    const replyId = replyOf(created).id;
+    const url = `/v1/admin/inquiries/${id}/replies/${replyId}/send`;
+    const headers = {
+      origin: ADMIN_ORIGIN,
+      cookie: `__Host-osa_session=${editor.token}`,
+      'idempotency-key': `anon-${s}-${replyId}`,
+    };
+
+    const first = await app.inject({ method: 'POST', url, headers });
+    expect(first.statusCode).toBe(200);
+    expect(first.body).toContain('@contoh.invalid');
+
+    await adminRequest(app, {
+      method: 'POST',
+      url: `/v1/admin/inquiries/${id}/anonymize`,
+      token: admin.token,
+      payload: {},
+    });
+
+    // Simpanan idempotensi hidup 24 jam dan tidak ikut dianonimkan, jadi ia
+    // tidak boleh memuat DTO jadi — responsnya dirender ulang dari database.
+    const replay = await app.inject({ method: 'POST', url, headers });
+    expect(replay.statusCode).toBe(200);
+    expect(replay.headers['idempotent-replayed']).toBe('true');
+    expect(replay.body).not.toContain('@contoh.invalid');
+    expect(replay.body).not.toContain('Penawaran kami terlampir');
   });
 
   test('idempoten: putaran kedua tidak merusak apa pun', async () => {

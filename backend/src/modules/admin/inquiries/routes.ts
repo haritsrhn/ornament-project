@@ -22,8 +22,6 @@ import {
   sendInquiryReplyResponseSchema,
   updateInquiryReplySchema,
   updateInquirySchema,
-  type AdminInquiryRow,
-  type InquiryReplyDto,
   type PageMeta,
   type Permission,
 } from '@ornament/shared';
@@ -45,6 +43,7 @@ import {
   deleteReply,
   listInquiries,
   loadInquiry,
+  loadSendOutcome,
   sendReply,
   updateInquiry,
   updateReply,
@@ -242,37 +241,42 @@ export const adminInquiriesRoutes: FastifyPluginAsyncZod<AdminInquiriesRoutesOpt
     async (request, reply) => {
       const actor = actorOf(request);
       const key = request.headers['idempotency-key'];
+      const { id: inquiryId, replyId } = request.params;
 
-      interface SendEnvelope {
-        data: { reply: InquiryReplyDto; inquiry: AdminInquiryRow };
-      }
-      const run = async () => {
-        const outcome = await sendReply(deps, {
-          actor,
-          inquiryId: request.params.id,
-          replyId: request.params.replyId,
+      const render = async () => {
+        const outcome = await loadSendOutcome(app.prisma, inquiryId, replyId);
+        return ok({
+          reply: toInquiryReply(outcome.reply),
+          inquiry: toAdminInquiryRow(outcome.inquiry),
         });
-        return {
-          statusCode: 200,
-          body: ok({
-            reply: toInquiryReply(outcome.reply),
-            inquiry: toAdminInquiryRow(outcome.inquiry),
-          }) satisfies SendEnvelope,
-        };
       };
 
-      // Kunci idempotensi disarankan, bukan wajib (kontrak §5.11): klik ganda
-      // pada tombol Kirim tidak boleh mengirim dua email ke pembeli.
-      if (key === undefined) return (await run()).body;
+      if (key === undefined) {
+        await sendReply(deps, { actor, inquiryId, replyId });
+        return render();
+      }
 
+      /**
+       * Yang disimpan hanya id, bukan DTO jadi.
+       *
+       * `IdempotencyRecord` hidup 24 jam di tabelnya sendiri dan tidak ikut
+       * tersentuh anonimisasi (§6.11): menyimpan respons utuh di sana berarti
+       * nama, email, dan isi balasan pembeli bertahan sehari setelah ia minta
+       * datanya dihapus — dan pemutaran ulang akan menyajikannya kembali lewat
+       * API. Karena itu respons dirender ulang dari database, baik pada
+       * panggilan pertama maupun pengulangan.
+       */
       const result = await withIdempotency(
         app.prisma,
         { scope: 'POST /v1/admin/inquiries/:id/replies/:replyId/send', actor: actor.id, key },
-        { inquiryId: request.params.id, replyId: request.params.replyId },
-        run,
+        { inquiryId, replyId },
+        async () => {
+          await sendReply(deps, { actor, inquiryId, replyId });
+          return { statusCode: 200, body: { data: { inquiryId, replyId } } };
+        },
       );
       if (result.replayed) void reply.header(IDEMPOTENT_REPLAYED_HEADER, 'true');
-      return reply.code(200).send(result.body as SendEnvelope);
+      return reply.code(200).send(await render());
     },
   );
 
