@@ -57,10 +57,28 @@ export interface InquiryNotificationEmail {
   subject: string;
 }
 
+/**
+ * Balasan admin ke pengirim inquiry (kontrak §5.11).
+ *
+ * Berbeda dengan notifikasi tim, email ini **memang** berisi tulisan staf dan
+ * dialamatkan ke pengunjung, jadi `to` diambil dari `Inquiry.email` saat
+ * balasan dibuat — bukan saat dikirim — supaya inquiry yang dianonimkan di
+ * antara keduanya tidak membangkitkan alamat yang sudah dihapus.
+ */
+export interface InquiryReplyEmail {
+  to: string;
+  subject: string;
+  body: string;
+  /** Lampiran balasan; sudah diunduh pemanggil dari R2. */
+  attachments?: { fileName: string; content: Buffer }[];
+}
+
 export interface EmailSender {
   sendInvite: (message: InviteEmail) => Promise<EmailSendResult>;
   /** Hasilnya disimpan di `Inquiry.notificationMessageId`/`notificationError`. */
   sendInquiryNotification: (message: InquiryNotificationEmail) => Promise<EmailSendResult>;
+  /** Hasilnya disimpan di `InquiryReply.emailMessageId`/`emailError`. */
+  sendInquiryReply: (message: InquiryReplyEmail) => Promise<EmailSendResult>;
 }
 
 /** `emailError` saat belum ada penyedia email yang dikonfigurasi. */
@@ -84,6 +102,15 @@ export class NoopEmailSender implements EmailSender {
    * "notifikasi belum terkirim" alih-alih mengira tim sudah diberi tahu.
    */
   sendInquiryNotification(): Promise<EmailSendResult> {
+    return Promise.resolve({ sentAt: null, messageId: null, error: EMAIL_NOT_CONFIGURED });
+  }
+
+  /**
+   * Balasan tetap tersimpan dan respons tetap `200`; statusnya `FAILED`
+   * dengan `emailError = "EMAIL_NOT_CONFIGURED"`, dan bisa dikirim ulang
+   * setelah penyedia dikonfigurasi (kontrak §5.11).
+   */
+  sendInquiryReply(): Promise<EmailSendResult> {
     return Promise.resolve({ sentAt: null, messageId: null, error: EMAIL_NOT_CONFIGURED });
   }
 }

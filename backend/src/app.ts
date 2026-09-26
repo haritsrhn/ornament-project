@@ -6,9 +6,11 @@ import type { Env } from './config/env.js';
 import type { PrismaClient } from './generated/prisma/client.js';
 import { createR2Client, type R2 } from './lib/r2.js';
 import { NoopEmailSender, type EmailSender } from './modules/email/sender.js';
+import { createResendSender } from './modules/email/resend.js';
 import { adminArticlesRoutes } from './modules/admin/articles/routes.js';
 import { adminArtisansRoutes } from './modules/admin/artisans/routes.js';
 import { adminCommentsRoutes } from './modules/admin/comments/routes.js';
+import { adminInquiriesRoutes } from './modules/admin/inquiries/routes.js';
 import { adminMediaRoutes } from './modules/admin/media/routes.js';
 import { adminProductsRoutes } from './modules/admin/products/routes.js';
 import { adminTaxonomyRoutes } from './modules/admin/taxonomy/routes.js';
@@ -190,6 +192,19 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       ...(config?.R2_BUCKET === undefined ? {} : { bucket: config.R2_BUCKET }),
     });
 
+  /**
+   * Resend bila `RESEND_*` lengkap, `NoopEmailSender` bila tidak (ADR K4).
+   * Satu instance dipakai undangan, notifikasi inquiry, dan balasan inquiry:
+   * ketiganya harus melaporkan kegagalan dengan cara yang sama.
+   */
+  const emailSender =
+    options.emailSender ??
+    createResendSender({
+      ...(config?.RESEND_API_KEY === undefined ? {} : { apiKey: config.RESEND_API_KEY }),
+      ...(config?.RESEND_FROM === undefined ? {} : { from: config.RESEND_FROM }),
+    }) ??
+    new NoopEmailSender();
+
   const resolvedMediaPublicUrl = options.mediaPublicUrl ?? config?.R2_PUBLIC_URL;
   const mediaPublicUrl =
     resolvedMediaPublicUrl === undefined ? {} : { mediaPublicUrl: resolvedMediaPublicUrl };
@@ -215,16 +230,17 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       : { uploadSecret: options.uploadSecret ?? config?.MEDIA_UPLOAD_SECRET }),
   });
   void app.register(adminCommentsRoutes, { prefix: '/v1', r2 });
+  void app.register(adminInquiriesRoutes, { prefix: '/v1', emailSender, r2 });
   void app.register(adminTaxonomyRoutes, { prefix: '/v1' });
   void app.register(invitesRoutes, {
     prefix: '/v1',
-    ...(options.emailSender === undefined ? {} : { emailSender: options.emailSender }),
+    emailSender,
   });
   void app.register(publicRoutes, {
     prefix: '/v1',
     ...mediaPublicUrl,
     throttles: options.publicSubmitThrottles ?? createPublicSubmitThrottles(),
-    emailSender: options.emailSender ?? new NoopEmailSender(),
+    emailSender,
     ...(options.internalApiKey === undefined
       ? config?.INTERNAL_API_KEY === undefined
         ? {}

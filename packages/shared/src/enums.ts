@@ -80,6 +80,16 @@ export type ArtisanDocumentKind = z.infer<typeof artisanDocumentKindSchema>;
  * tampil di tab mana pun dan tidak bisa dipulihkan lewat UI, sedangkan `SPAM`
  * masih bisa dikembalikan ke `APPROVED`.
  */
+/** Status inquiry (model §6.5). Transisinya dibatasi, lihat `canTransitionInquiry`. */
+export const INQUIRY_STATUSES = ['NEW', 'IN_PROGRESS', 'DONE'] as const;
+export const inquiryStatusSchema = z.enum(INQUIRY_STATUSES);
+export type InquiryStatus = z.infer<typeof inquiryStatusSchema>;
+
+/** Status balasan inquiry: `DRAFT` bisa diedit, `SENT` tidak, `FAILED` bisa diulang. */
+export const REPLY_STATUSES = ['DRAFT', 'SENT', 'FAILED'] as const;
+export const replyStatusSchema = z.enum(REPLY_STATUSES);
+export type ReplyStatus = z.infer<typeof replyStatusSchema>;
+
 export const COMMENT_STATUSES = ['PENDING', 'APPROVED', 'SPAM', 'DELETED'] as const;
 export const commentStatusSchema = z.enum(COMMENT_STATUSES);
 export type CommentStatus = z.infer<typeof commentStatusSchema>;
